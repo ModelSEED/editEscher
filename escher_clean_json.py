@@ -4,24 +4,17 @@ abbreviations and shorten reaction names for display.
 Extracted from ABX_mouse_gut/Notebooks/escher_API_mapping.ipynb, section
 "editing the SVG Escher Map" > "updating the JSON file".
 """
+import logging
 from json import load, dump
+from pathlib import Path
 
 
-# Mapping from ModelSEED compound IDs to short abbreviations used in the
-# Escher map labels.
-CPD_ID_ABBRV = {
-    "cpd00076": "sucr", "cpd00141": "prpa", "cpd00211": "butr",
-    "cpd00130": "malat", "cpd00137": "citr", "cpd00024": "akg",
-    "cpd00036": "succ", "cpd00064": "ornth", "cpd03847": "myrst",
-    "cpd00106": "fumr", "cpd00108": "galct", "cpd00382": "melit",
-    "cpd00105": "ribs", "cpd00121": "inost", "cpd00751": "fucos",
-    "cpd00122": "acglum", "cpd00158": "cellb",
-    "cpd00214": "palm", "cpd03198": "melib", "cpd01171": "dulco",
-    "cpd00020": "pyr", "cpd00224": "arbns", "cpd00082": "fru",
-    "cpd00851": "4hpro", "cpd01107": "decac", "cpd00396": "rhmn",
-    "cpd01055": "allos", "cpd00027": "glu",
-    "cpd01242": "2drib",
-}
+log = logging.getLogger(__name__)
+
+CONFIG_DIR = Path(__file__).parent / "config"
+
+with (CONFIG_DIR / "cpd_abbrev.json").open() as _fh:
+    CPD_ID_ABBRV = load(_fh)
 
 
 def build_name_abbrev_table(msdb, output_csv="nameAbbrev.csv"):
@@ -40,8 +33,9 @@ def build_name_abbrev_table(msdb, output_csv="nameAbbrev.csv"):
 
 def cleanEscherJSON(escherPath, abbrev_map=CPD_ID_ABBRV):
     """Rewrite metabolite node names to short abbreviations and shorten
-    reaction names, writing the result to ``*_cleaned0.json``."""
-    with open(escherPath, "r") as jsonIn:
+    reaction names, writing the result to ``*_cleaned0<suffix>``."""
+    escherPath = Path(escherPath)
+    with escherPath.open("r") as jsonIn:
         escherMap = load(jsonIn)
 
     # replace metabolite node names with their abbreviations; drop empties
@@ -62,11 +56,13 @@ def cleanEscherJSON(escherPath, abbrev_map=CPD_ID_ABBRV):
         content["name"] = (content["name"].split(".")[0][:6]
                            + "." + content["name"].split(".")[1])
 
-    out_path = escherPath.replace(".json", "_cleaned0.json")
-    with open(out_path, "w") as jsonOut:
+    out_path = escherPath.with_name(escherPath.stem + "_cleaned0" + escherPath.suffix)
+    with out_path.open("w") as jsonOut:
         dump(escherMap, jsonOut, indent=3)
+    log.info("wrote cleaned Escher JSON to %s", out_path)
     return out_path
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     cleanEscherJSON("metabolite_focused_map_IDs.json")

@@ -4,13 +4,22 @@ Extracted from ABX_mouse_gut/Notebooks/escher_API_mapping.ipynb, the block
 that builds ``modelSVG_mapping.json`` and classifies segments as reactant/
 product and nodes as consumed/produced/intermediate.
 """
+import logging
 from json import load, dump
+from pathlib import Path
 
 from escher_clean_json import CPD_ID_ABBRV
 
 
-DEFAULT_DIETS = ["RC", "WD"]
-DEFAULT_DAYS = ["-1.5", "1.5", "4.0", "6.0", "9.0", "12.5"]
+log = logging.getLogger(__name__)
+
+CONFIG_DIR = Path(__file__).parent / "config"
+
+with (CONFIG_DIR / "study_axes.json").open() as _fh:
+    _axes_cfg = load(_fh)
+
+DEFAULT_DIETS = list(_axes_cfg["diets"])
+DEFAULT_DAYS = list(_axes_cfg["days"])
 
 
 def build_direction_tracking(model_path="ASVInteractionModel.json",
@@ -63,7 +72,7 @@ def build_direction_tracking(model_path="ASVInteractionModel.json",
             fromID = escherMap[1]["nodes"][fromNode].get("bigg_id", "")
             toID = escherMap[1]["nodes"][toNode].get("bigg_id", "")
             if fromID != "":
-                print(fromID)
+                log.debug("segment %s has from-node bigg_id %s", segNum, fromID)
             if toID in directionTracking[diet][day][rxnName]["reactants"]:
                 directionTracking[diet][day][rxnName]["segments"]["consumption"][f"s{segNum}"] = (
                     f"n{toNode}", abbrev_map[toID])
@@ -75,6 +84,7 @@ def build_direction_tracking(model_path="ASVInteractionModel.json",
     if output_path:
         with open(output_path, "w") as jsonOut:
             dump(directionTracking, jsonOut, indent=3)
+        log.info("wrote direction tracking to %s", output_path)
 
     return directionTracking, consumptionEdges
 
@@ -118,5 +128,6 @@ def categorize_segments_and_nodes(escher_path="metabolite_focused_map_IDs_cleane
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     build_direction_tracking()
     categorize_segments_and_nodes()

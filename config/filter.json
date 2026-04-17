@@ -1,0 +1,30 @@
+{
+    "aa_names": [
+        "L-Methionine",
+        "L-Histidine",
+        "L-Tryptophan",
+        "L-Alanine",
+        "L-Threonine",
+        "L-Glutamate",
+        "L-Isoleucine",
+        "L-Proline",
+        "L-Leucine",
+        "Glycine",
+        "L-Phenylalanine",
+        "L-Tyrosine",
+        "L-Valine",
+        "L-Glutamine",
+        "L-Arginine",
+        "L-Asparagine",
+        "L-Aspartate",
+        "L-Lysine",
+        "L-Serine",
+        "L-Cysteine",
+        "D-Serine",
+        "5-Oxoproline"
+    ],
+    "skip_extras": [
+        "Niacin",
+        "Acetate"
+    ]
+}

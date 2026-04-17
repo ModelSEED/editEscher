@@ -5,11 +5,16 @@ Extracted from ABX_mouse_gut/Notebooks/escher_API_mapping.ipynb, section
 "editing the SVG Escher Map". The ``shapely``-based label-layout helpers are
 preserved from the notebook but were never enabled in the final call.
 """
+import logging
 import random
 import re
+from pathlib import Path
 
 # shapely is only required if the label-layout helpers below are used.
 # from shapely.geometry import Point, box
+
+
+log = logging.getLogger(__name__)
 
 
 def tint_color(hex_color, tint_factor=0.5):
@@ -98,10 +103,11 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     hex color -> [element ids]) to highlight specific segments/nodes/
     reactions, and dashes the segments in ``dashedEdges``.
 
-    The edited SVG is written to ``*_edited.svg``.
+    The edited SVG is written to ``<stem>_edited<suffix>``.
     """
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(open(svg_path, "r").read(), "lxml-xml")
+    svg_path = Path(svg_path)
+    soup = BeautifulSoup(svg_path.read_text(), "lxml-xml")
 
     # remove all stoichiometric or other undesirable labels
     for label in labels_to_remove:
@@ -150,7 +156,7 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
                 if abbrevIDs is not None:
                     cpdID = label.string
                     label.string = abbrevIDs[cpdID]
-                    print(node["id"])
+                    log.debug("faded and re-abbreviated node %s", node["id"])
 
         metadata.string = metadata.string + f" .m{fadedNodesColor}" + "{" + f"stroke:#{fadedNodesColor};fill:#{fadedNodesColor}" + "}"
         metadata.string = metadata.string + f" .m{fadedNodesColor}-label" + "{" + f"font-size:{node_label_px / 1.2}px;fill:#{fadedNodesColor};stroke:#000000;stroke-width:{node_label_px / stroke_reduction}px;" + "}"
@@ -219,9 +225,9 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
         if largeEdgeLabels is not None:
             metadata.string = metadata.string + f" .m{fadedEdgesColor}" + "{" + f"stroke:#{fadedEdgesColor};" + f"stroke-width:{rxn_edge_px / 1.2}px;" + "fill:none}"
 
-    out_path = svg_path.replace(".svg", "_edited.svg")
-    with open(out_path, "w", encoding="utf-8") as file:
-        file.write(soup.prettify())
+    out_path = svg_path.with_name(svg_path.stem + "_edited" + svg_path.suffix)
+    out_path.write_text(soup.prettify(), encoding="utf-8")
+    log.info("wrote edited Escher SVG to %s", out_path)
     return out_path
 
 
@@ -231,6 +237,7 @@ if __name__ == "__main__":
     # ``modelseedpy.biochem.from_local("../../ModelSEEDDatabase")``.
     from escher_model_mapping import build_direction_tracking
 
+    logging.basicConfig(level=logging.INFO)
     _, consumptionEdges = build_direction_tracking()
 
     msdb = None  # optionally: from modelseedpy.biochem import from_local; msdb = from_local("../../ModelSEEDDatabase")
@@ -244,7 +251,7 @@ if __name__ == "__main__":
             "n1322", "n1443", "n1672", "n1673",
             "n2066", "n2102", "n206", "n404", "n873", "n1090", "n1182",
             "n1746", "n2154", "n2154", "n1338",  # RC
-            "n539", "n1063", "n1282", "n1511", "n1576"  # cellibiose
+            "n539", "n1063", "n1282", "n1511", "n1576",  # cellibiose
             "n1540", "n249", "n1515", "n1540",  # Melitose
             "n85", "n104",  # WD
         ],

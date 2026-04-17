@@ -8,18 +8,20 @@ lookup files (``Escher_nodeNum_cpdIDs.json`` and ``EscherNodeMapping.json``),
 then emits a filtered map at ``metabolite_focused_map0.json``. The logic is
 preserved here as reusable functions.
 """
+import logging
 from json import load, dump
+from pathlib import Path
 
 
-AA_NAMES = [
-    "L-Methionine", "L-Histidine", "L-Tryptophan", "L-Alanine", "L-Threonine",
-    "L-Glutamate", "L-Isoleucine", "L-Proline", "L-Leucine", "Glycine",
-    "L-Phenylalanine", "L-Tyrosine", "L-Valine", "L-Glutamine", "L-Arginine",
-    "L-Asparagine", "L-Aspartate", "L-Lysine", "L-Serine", "L-Cysteine",
-    "D-Serine", "5-Oxoproline",
-]
+log = logging.getLogger(__name__)
 
-DEFAULT_SKIP_NAMES = AA_NAMES + ["Niacin", "Acetate"]
+CONFIG_DIR = Path(__file__).parent / "config"
+
+with (CONFIG_DIR / "filter.json").open() as _fh:
+    _filter_cfg = load(_fh)
+
+AA_NAMES = list(_filter_cfg["aa_names"])
+DEFAULT_SKIP_NAMES = AA_NAMES + list(_filter_cfg["skip_extras"])
 
 
 def build_node_lookups(escher_map,
@@ -109,8 +111,10 @@ def filter_escher_map(input_path="metabolite_focused_map.json",
 
     with open(output_path, "w") as jsonOut:
         dump(newEscher, jsonOut, indent=3)
+    log.info("wrote filtered Escher map to %s", output_path)
     return newEscher
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     filter_escher_map()
