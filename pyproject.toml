@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "escher-edit"
+version = "0.1.0"
+description = "Filter, clean, and restyle Escher metabolic-map JSON and SVG."
+readme = "EXTRACTION_NOTES.md"
+requires-python = ">=3.9"
+authors = [{ name = "Andrew Freiburger" }]
+dependencies = [
+    "beautifulsoup4",
+    "lxml",
+]
+
+[project.optional-dependencies]
+labels = ["shapely"]
+mapping = ["pandas"]
+
+[project.scripts]
+escher-edit-filter = "escher_edit.filter_map:main"
+escher-edit-clean = "escher_edit.clean_json:main"
+escher-edit-map = "escher_edit.model_mapping:main"
+escher-edit-svg = "escher_edit.svg_editor:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/escher_edit"]

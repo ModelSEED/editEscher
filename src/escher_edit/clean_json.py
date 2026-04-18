@@ -63,6 +63,10 @@ def cleanEscherJSON(escherPath, abbrev_map=CPD_ID_ABBRV):
     return out_path
 
 
-if __name__ == "__main__":
+def main():
     logging.basicConfig(level=logging.INFO)
     cleanEscherJSON("metabolite_focused_map_IDs.json")
+
+
+if __name__ == "__main__":
+    main()

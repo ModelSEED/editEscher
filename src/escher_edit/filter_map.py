@@ -115,6 +115,10 @@ def filter_escher_map(input_path="metabolite_focused_map.json",
     return newEscher
 
 
-if __name__ == "__main__":
+def main():
     logging.basicConfig(level=logging.INFO)
     filter_escher_map()
+
+
+if __name__ == "__main__":
+    main()

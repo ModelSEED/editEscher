@@ -46,7 +46,12 @@ regenerated from the notebook directly.
 
 | File | Purpose (notebook section) |
 | --- | --- |
-| `escher_filter_map.py` | "filtering the Escher map for fewer reactions based on the metabolite fluxes" |
-| `escher_clean_json.py` | "editing the SVG Escher Map" > "updating the JSON file" |
-| `escher_model_mapping.py` | builds `modelSVG_mapping.json` + consumption-edge list, categorizes segments/nodes |
-| `escher_svg_editor.py` | `EscherSVG_processing` + helpers (the SVG post-processor) |
+| `src/escher_edit/filter_map.py` | "filtering the Escher map for fewer reactions based on the metabolite fluxes" |
+| `src/escher_edit/clean_json.py` | "editing the SVG Escher Map" > "updating the JSON file" |
+| `src/escher_edit/model_mapping.py` | builds `modelSVG_mapping.json` + consumption-edge list, categorizes segments/nodes |
+| `src/escher_edit/svg_editor.py` | `EscherSVG_processing` + helpers (the SVG post-processor) |
+
+Install with `pip install -e .` (or `uv pip install -e .`) from the repo
+root. Console scripts `escher-edit-filter`, `escher-edit-clean`,
+`escher-edit-map`, `escher-edit-svg` run each module's notebook-equivalent
+entrypoint.

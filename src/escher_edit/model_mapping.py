@@ -8,7 +8,7 @@ import logging
 from json import load, dump
 from pathlib import Path
 
-from escher_clean_json import CPD_ID_ABBRV
+from .clean_json import CPD_ID_ABBRV
 
 
 log = logging.getLogger(__name__)
@@ -127,7 +127,11 @@ def categorize_segments_and_nodes(escher_path="metabolite_focused_map_IDs_cleane
     return segment_categorization, nodeCategories
 
 
-if __name__ == "__main__":
+def main():
     logging.basicConfig(level=logging.INFO)
     build_direction_tracking()
     categorize_segments_and_nodes()
+
+
+if __name__ == "__main__":
+    main()
