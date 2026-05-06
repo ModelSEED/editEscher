@@ -136,11 +136,18 @@ def restyle_reaction_labels(soup, style, largeEdgeLabels, abbrevIDs):
             label.string = cleanedStr.split(".")[0][:6] + "." + cleanedStr.split(".")[1]
 
 
-def restyle_nodes(soup, style, largeNodeLabels, abbrevIDs):
+def restyle_nodes(soup, style, largeNodeLabels, abbrevIDs, perNodeLabelSizes=None):
     """Rewrite ``.node-label`` and ``.metabolite-circle`` CSS. When
     ``largeNodeLabels`` is set, add a faded class and apply it to every node
     outside that list; when ``abbrevIDs`` is also set, rename faded node
-    labels via that mapping."""
+    labels via that mapping.
+
+    If ``perNodeLabelSizes`` is provided (``{node_id: size_px}``), emit
+    inline ``font-size`` styles on the matching node ``<text>`` elements.
+    The node_id matches the SVG ``id`` attribute of each ``.node`` group
+    (Escher prefixes JSON keys with ``n`` — e.g. JSON key ``"33"`` becomes
+    SVG id ``"n33"`` — so both forms are checked).
+    """
     metadata = _metadata(soup)
     metadata.string = metadata.string.replace(
         ".node-label{font-size:20px}",
@@ -148,25 +155,45 @@ def restyle_nodes(soup, style, largeNodeLabels, abbrevIDs):
     metadata.string = metadata.string.replace(
         ".metabolite-circle{stroke:#a24510;fill:#e0865b}",
         ".metabolite-circle{stroke:#" + f"{style.node_label_hex};fill:#{style.node_label_hex}" + "}")
-    if largeNodeLabels is None:
-        return
-    faded = tint_color(style.node_label_hex, style.tint_factor)
-    for node in soup.find_all(class_="node"):
-        circle = node.find("circle")
-        label = node.find("text")
-        if label is None:
-            continue
-        if node["id"] in largeNodeLabels:
-            continue
-        if circle is None:
-            continue
-        circle["class"] = f"m{faded}"
-        label["class"] = f"m{faded}-label"
-        if abbrevIDs is not None:
-            label.string = abbrevIDs[label.string]
-            log.debug("faded and re-abbreviated node %s", node["id"])
-    metadata.string = metadata.string + f" .m{faded}" + "{" + f"stroke:#{faded};fill:#{faded}" + "}"
-    metadata.string = metadata.string + f" .m{faded}-label" + "{" + f"font-size:{style.node_label_px / 1.2}px;fill:#{faded};stroke:#000000;stroke-width:{style.node_label_px / style.stroke_reduction}px;" + "}"
+
+    faded = None
+    if largeNodeLabels is not None:
+        faded = tint_color(style.node_label_hex, style.tint_factor)
+        for node in soup.find_all(class_="node"):
+            circle = node.find("circle")
+            label = node.find("text")
+            if label is None or circle is None:
+                continue
+            if node["id"] in largeNodeLabels:
+                continue
+            circle["class"] = f"m{faded}"
+            label["class"] = f"m{faded}-label"
+            if abbrevIDs is not None:
+                label.string = abbrevIDs[label.string]
+                log.debug("faded and re-abbreviated node %s", node["id"])
+        metadata.string = metadata.string + f" .m{faded}" + "{" + f"stroke:#{faded};fill:#{faded}" + "}"
+        metadata.string = metadata.string + f" .m{faded}-label" + "{" + f"font-size:{style.node_label_px / 1.2}px;fill:#{faded};stroke:#000000;stroke-width:{style.node_label_px / style.stroke_reduction}px;" + "}"
+
+    if perNodeLabelSizes:
+        # Build a matcher accepting both raw keys (e.g. "33") and the
+        # ``n``-prefixed form Escher uses in SVG ids ("n33").
+        size_by_id = {}
+        for key, size in perNodeLabelSizes.items():
+            size_by_id[str(key)] = size
+            size_by_id[f"n{key}"] = size
+        stroke = style.node_label_px / style.stroke_reduction
+        for node in soup.find_all(class_="node"):
+            size = size_by_id.get(node.get("id"))
+            if size is None:
+                continue
+            label = node.find("text")
+            if label is None:
+                continue
+            existing = label.get("style", "")
+            label["style"] = (
+                existing.rstrip(";") + ";" if existing else ""
+            ) + f"font-size:{size}px;stroke-width:{stroke}px"
+            log.debug("enlarged label on node %s to %gpx", node.get("id"), size)
 
 
 def restyle_segments(soup, style):
@@ -248,6 +275,21 @@ def apply_color_highlights(soup, colorElements, largeEdgeLabels, style):
         metadata.string = metadata.string + f" .m{faded_edges}" + "{" + f"stroke:#{faded_edges};" + f"stroke-width:{style.rxn_edge_px / 1.2}px;" + "fill:none}"
 
 
+def extract_per_node_label_sizes_from_json(json_path):
+    """Read an Escher JSON map and return ``{node_id: label_size}`` for every
+    metabolite node that carries the (non-standard) ``label_size`` attribute
+    (written by ``layout.set_node_label_sizes``).
+    """
+    from json import load
+    with open(json_path) as fh:
+        escher_map = load(fh)
+    return {
+        node_id: node["label_size"]
+        for node_id, node in escher_map[1]["nodes"].items()
+        if node.get("node_type") == "metabolite" and "label_size" in node
+    }
+
+
 def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
                          style=None,
                          labels_to_remove=("stoichiometry-labels",),
@@ -255,7 +297,9 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
                          largeEdgeLabels=None,
                          colorElements=None,
                          abbrevIDs=None,
-                         dashedEdges=None):
+                         dashedEdges=None,
+                         perNodeLabelSizes=None,
+                         json_path=None):
     """Post-process a rendered Escher SVG.
 
     Drops specified label groups, rewrites fonts/colors for nodes, reactions,
@@ -264,6 +308,11 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     segments as ASV anchor nodes, applies ``colorElements`` (a dict of
     hex color -> [element ids]) to highlight specific segments/nodes/
     reactions, and dashes the segments in ``dashedEdges``.
+
+    When ``perNodeLabelSizes`` is given (or ``json_path`` points to a map
+    written by ``layout.set_node_label_sizes``), each listed node has its
+    ``<text>`` label enlarged to the requested pixel size via an inline
+    ``style`` attribute. ``perNodeLabelSizes`` overrides ``json_path``.
 
     Style parameters (sizes, colors, tint/stroke scaling) are bundled in
     :class:`EscherStyle`; pass an instance via ``style=`` to override
@@ -275,9 +324,13 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     svg_path = Path(svg_path)
     soup = BeautifulSoup(svg_path.read_text(), "lxml-xml")
 
+    if perNodeLabelSizes is None and json_path is not None:
+        perNodeLabelSizes = extract_per_node_label_sizes_from_json(json_path)
+
     remove_label_groups(soup, labels_to_remove)
     restyle_reaction_labels(soup, style, largeEdgeLabels, abbrevIDs)
-    restyle_nodes(soup, style, largeNodeLabels, abbrevIDs)
+    restyle_nodes(soup, style, largeNodeLabels, abbrevIDs,
+                  perNodeLabelSizes=perNodeLabelSizes)
     restyle_segments(soup, style)
     mark_asv_rectangles(soup, style, dashedEdges)
     apply_color_highlights(soup, colorElements, largeEdgeLabels, style)
