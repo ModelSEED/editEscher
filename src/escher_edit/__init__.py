@@ -1,6 +1,10 @@
 """Tools for editing Escher metabolic-map JSON and rendered SVG output.
 
 Public surface:
+    build_map.build_escher_map, build_member_reactions,
+        build_map_from_interactions, parse_interaction_matrix,
+        parse_condition_matrix, load_compound_names,
+        classify_compounds, MapStyle
     clean_json.cleanEscherJSON, CPD_ID_ABBRV
     filter_map.filter_escher_map, AA_NAMES, DEFAULT_SKIP_NAMES
     layout.apply_layout, normalize_metabolite_label_offsets,
@@ -9,6 +13,17 @@ Public surface:
     reverse_reactions.reverse_reaction, reverse_reactions_in_map
     svg_editor.EscherSVG_processing, EscherStyle
 """
+from .build_map import (
+    AVERAGE_CONDITION,
+    MapStyle,
+    classify_compounds,
+    build_escher_map,
+    build_map_from_interactions,
+    build_member_reactions,
+    load_compound_names,
+    parse_condition_matrix,
+    parse_interaction_matrix,
+)
 from .clean_json import CPD_ID_ABBRV, cleanEscherJSON, build_name_abbrev_table
 from .filter_map import AA_NAMES, DEFAULT_SKIP_NAMES, filter_escher_map, build_node_lookups
 from .layout import (
@@ -34,6 +49,10 @@ from .svg_editor import (
 )
 
 __all__ = [
+    "AVERAGE_CONDITION", "MapStyle", "classify_compounds", "build_escher_map",
+    "build_map_from_interactions", "build_member_reactions",
+    "load_compound_names", "parse_condition_matrix",
+    "parse_interaction_matrix",
     "CPD_ID_ABBRV", "cleanEscherJSON", "build_name_abbrev_table",
     "AA_NAMES", "DEFAULT_SKIP_NAMES", "filter_escher_map", "build_node_lookups",
     "apply_layout", "normalize_metabolite_label_offsets",

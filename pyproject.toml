@@ -19,6 +19,7 @@ labels = ["shapely"]
 mapping = ["pandas"]
 
 [project.scripts]
+escher-edit-build = "escher_edit.build_map:main"
 escher-edit-filter = "escher_edit.filter_map:main"
 escher-edit-clean = "escher_edit.clean_json:main"
 escher-edit-map = "escher_edit.model_mapping:main"
