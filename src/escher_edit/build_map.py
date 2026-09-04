@@ -370,6 +370,71 @@ def classify_compounds(members):
             sorted(consumed & produced))
 
 
+def cross_feeding_segments(escher_map, prefix="s"):
+    """Segment ids for the edges that carry cross-feeding.
+
+    A metabolite node is cross-fed when the reactions touching it disagree on
+    sign — at least one consumes it and at least one produces it. Those are
+    exactly the nodes drawn in the exchange lanes, so every segment ending on
+    one is an edge along which one member feeds another.
+
+    Ids come back ``s``-prefixed to match what Escher writes into the rendered
+    SVG, ready to hand to ``svg_editor.EscherSVG_processing(dashedEdges=...)``
+    or ``svg_editor.dash_segments``. Escher's JSON schema has no per-segment
+    style, so dashing can only happen on the rendered SVG.
+
+    Works on any Escher map whose nodes are shared between reactions,
+    including hand-drawn ones. Direction comes from the coefficient signs —
+    Escher's segments run marker -> metabolite for reactants and products
+    alike, so the topology alone does not say which is which — and that means
+    a node's ``bigg_id`` has to match the ids in its reactions'
+    ``metabolites`` lists. Maps cleaned by the notebook's original
+    ``cleanEscherJSON`` renamed the nodes but not the metabolite lists; such a
+    map is logged as a warning rather than quietly returning nothing.
+    """
+    nodes = escher_map[1]["nodes"]
+    reactions = escher_map[1]["reactions"]
+
+    node_ids = {node.get("bigg_id") for node in nodes.values()
+                if node.get("node_type") == "metabolite"}
+    metabolite_ids = {met["bigg_id"] for reaction in reactions.values()
+                      for met in reaction.get("metabolites", [])}
+    if node_ids and not (node_ids & metabolite_ids):
+        log.warning(
+            "no metabolite node bigg_id matches any reaction metabolite id "
+            "(e.g. node %r vs reaction metabolite %r) — this map's node names "
+            "were rewritten without updating its metabolites lists, so "
+            "cross-feeding cannot be read from it; use the map from before "
+            "that rewrite",
+            sorted(node_ids)[0], sorted(metabolite_ids)[0] if metabolite_ids else None)
+
+    signs = {}
+    for reaction in reactions.values():
+        coefficients = {met["bigg_id"]: met["coefficient"]
+                        for met in reaction.get("metabolites", [])}
+        for segment in reaction.get("segments", {}).values():
+            for node_id in (segment["from_node_id"], segment["to_node_id"]):
+                node = nodes.get(node_id) or {}
+                if node.get("node_type") != "metabolite":
+                    continue
+                if node.get("bigg_id") in coefficients:
+                    signs.setdefault(node_id, set()).add(
+                        coefficients[node["bigg_id"]] > 0)
+
+    cross_fed = {node_id for node_id, seen in signs.items() if len(seen) > 1}
+    found = set()
+    for reaction in reactions.values():
+        for segment_id, segment in reaction.get("segments", {}).items():
+            if (segment["from_node_id"] in cross_fed
+                    or segment["to_node_id"] in cross_fed):
+                found.add(segment_id)
+
+    log.info("%d cross-fed compound node(s) on %d segment(s)",
+             len(cross_fed), len(found))
+    return [f"{prefix}{seg}" for seg in
+            sorted(found, key=lambda s: (len(s), s))]
+
+
 def _bezier(ax, ay, bx, by, fracs):
     """Bezier handles placed along the chord from (ax, ay) to (bx, by)."""
     f1, f2 = fracs

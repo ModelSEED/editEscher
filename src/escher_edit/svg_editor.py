@@ -208,13 +208,40 @@ def restyle_segments(soup, style):
         ".text-label-input{font-size:" + f"{style.rxn_label_px * 1.8}" + "px}")
 
 
-def mark_asv_rectangles(soup, style, dashedEdges):
-    """For each segment-group: if listed in ``dashedEdges``, dash it; and
-    when the segment path is a short, nearly-horizontal straight line,
-    draw a small rectangle over its start as an ASV anchor marker."""
+def dash_segments(soup, dashed_edges, dash_pattern="8,5"):
+    """Dash (or dot) the listed segment groups.
+
+    ``dashed_edges`` holds segment-group ids — ``s<id>``, as
+    ``model_mapping.build_direction_tracking`` returns for consumption edges
+    and ``build_map.cross_feeding_segments`` for cross-feeding edges. The
+    pattern is written as an SVG ``stroke-dasharray`` attribute on the
+    ``<g class="segment-group">``, which the ``<path class="segment">`` inside
+    inherits; pass e.g. ``"2,6"`` for a dotted line.
+
+    Returns the number of segments actually matched, and logs it against the
+    number requested so a stale id list does not fail silently.
+    """
+    if not dashed_edges:
+        return 0
+    targets = set(dashed_edges)
+    matched = 0
     for edge in soup.find_all(class_="segment-group"):
-        if dashedEdges is not None and edge["id"] in dashedEdges:
-            edge["stroke-dasharray"] = "8,5"
+        if edge.get("id") in targets:
+            edge["stroke-dasharray"] = dash_pattern
+            matched += 1
+    log.info("dashed %d of %d requested segment(s) with pattern %r",
+             matched, len(targets), dash_pattern)
+    return matched
+
+
+def mark_asv_rectangles(soup, style):
+    """Draw a small rectangle over the start of every segment whose path is a
+    short, nearly-horizontal straight line, marking it as an ASV anchor.
+
+    The offsets are tuned to the ABX map's viewBox, so this is only meaningful
+    for that figure; pass ``mark_asv_nodes=False`` to
+    :func:`EscherSVG_processing` for any other map."""
+    for edge in soup.find_all(class_="segment-group"):
         segment = edge.find(class_="segment")
         coordinates = list(map(float, re.split(",| ", segment["d"]
                                                .replace("M", "").replace("M", "")
@@ -298,6 +325,8 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
                          colorElements=None,
                          abbrevIDs=None,
                          dashedEdges=None,
+                         dash_pattern="8,5",
+                         mark_asv_nodes=True,
                          perNodeLabelSizes=None,
                          json_path=None):
     """Post-process a rendered Escher SVG.
@@ -307,7 +336,11 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     ``largeEdgeLabels``, draws small rectangles to mark short straight
     segments as ASV anchor nodes, applies ``colorElements`` (a dict of
     hex color -> [element ids]) to highlight specific segments/nodes/
-    reactions, and dashes the segments in ``dashedEdges``.
+    reactions, and dashes the segments in ``dashedEdges`` with
+    ``dash_pattern`` (``"2,6"`` or similar gives dots).
+
+    ``mark_asv_nodes`` gates the ASV anchor rectangles, whose offsets only
+    make sense for the ABX map; turn it off for any other figure.
 
     When ``perNodeLabelSizes`` is given (or ``json_path`` points to a map
     written by ``layout.set_node_label_sizes``), each listed node has its
@@ -332,7 +365,9 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     restyle_nodes(soup, style, largeNodeLabels, abbrevIDs,
                   perNodeLabelSizes=perNodeLabelSizes)
     restyle_segments(soup, style)
-    mark_asv_rectangles(soup, style, dashedEdges)
+    if mark_asv_nodes:
+        mark_asv_rectangles(soup, style)
+    dash_segments(soup, dashedEdges, dash_pattern)
     apply_color_highlights(soup, colorElements, largeEdgeLabels, style)
 
     out_path = svg_path.with_name(svg_path.stem + "_edited" + svg_path.suffix)

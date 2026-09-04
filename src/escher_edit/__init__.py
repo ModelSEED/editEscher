@@ -4,19 +4,20 @@ Public surface:
     build_map.build_escher_map, build_member_reactions,
         build_map_from_interactions, parse_interaction_matrix,
         parse_condition_matrix, load_compound_names,
-        classify_compounds, MapStyle
+        classify_compounds, cross_feeding_segments, MapStyle
     clean_json.cleanEscherJSON, CPD_ID_ABBRV
     filter_map.filter_escher_map, AA_NAMES, DEFAULT_SKIP_NAMES
     layout.apply_layout, normalize_metabolite_label_offsets,
         set_reaction_label_positions, remove_text_labels
     model_mapping.build_direction_tracking, categorize_segments_and_nodes
     reverse_reactions.reverse_reaction, reverse_reactions_in_map
-    svg_editor.EscherSVG_processing, EscherStyle
+    svg_editor.EscherSVG_processing, EscherStyle, dash_segments
 """
 from .build_map import (
     AVERAGE_CONDITION,
     MapStyle,
     classify_compounds,
+    cross_feeding_segments,
     build_escher_map,
     build_map_from_interactions,
     build_member_reactions,
@@ -45,11 +46,13 @@ from .reverse_reactions import reverse_reaction, reverse_reactions_in_map
 from .svg_editor import (
     EscherSVG_processing,
     EscherStyle,
+    dash_segments,
     extract_per_node_label_sizes_from_json,
 )
 
 __all__ = [
-    "AVERAGE_CONDITION", "MapStyle", "classify_compounds", "build_escher_map",
+    "AVERAGE_CONDITION", "MapStyle", "classify_compounds",
+    "cross_feeding_segments", "build_escher_map",
     "build_map_from_interactions", "build_member_reactions",
     "load_compound_names", "parse_condition_matrix",
     "parse_interaction_matrix",
@@ -62,5 +65,6 @@ __all__ = [
     "DEFAULT_DIETS", "DEFAULT_DAYS",
     "build_direction_tracking", "categorize_segments_and_nodes",
     "reverse_reaction", "reverse_reactions_in_map",
-    "EscherSVG_processing", "EscherStyle", "extract_per_node_label_sizes_from_json",
+    "EscherSVG_processing", "EscherStyle", "dash_segments",
+    "extract_per_node_label_sizes_from_json",
 ]

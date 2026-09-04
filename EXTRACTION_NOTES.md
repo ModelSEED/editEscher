@@ -81,6 +81,16 @@ the members they connect to; the outer columns are then spread over the full
 height of the member column, while the exchange lanes stay level with their
 members.
 
+Escher's JSON schema carries no per-segment style, so edge dashing happens on
+the rendered SVG: `cross_feeding_segments` returns the ids of every segment
+touching a cross-fed compound, and `svg_editor.dash_segments` (or
+`EscherSVG_processing(dashedEdges=...)`) dashes them.
+
+```python
+dashed = cross_feeding_segments(json.load(open("map.json")))
+EscherSVG_processing("map.svg", dashedEdges=dashed, mark_asv_nodes=False)
+```
+
 Run against `ASVMetaboliteInteractions.csv` it reproduces the reference map's
 115 reactions with identical IDs, metabolite sets, and coefficients, on a
 generated layout instead of hand-placed coordinates. Adding
