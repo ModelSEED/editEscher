@@ -301,7 +301,7 @@ class MapStyle:
     """
 
     def __init__(self, member_pitch=420.0, input_column_dx=None,
-                 output_column_dx=None, mixed_lane_dx=300.0,
+                 output_column_dx=None, mixed_lane_dx=240.0,
                  column_clearance=160.0,
                  min_node_spacing=90.0, lane_node_spacing=200.0,
                  lane_span_fraction=0.6,
