@@ -71,24 +71,79 @@ segments), and the reactions are arranged as three columns:
   vertical axis;
 - compounds only ever consumed in a left input column;
 - compounds only ever produced in a right output column;
-- compounds consumed by one member and produced by another in two narrow
-  lanes flanking the member column, level with the members that exchange
-  them.
+- compounds consumed by one member and produced by another in two lanes
+  flanking the member column, level with the members that exchange them.
 
 Every compound is collapsed to one shared node per condition, so a compound
-several members draw on is drawn once. Nodes are placed at the mean height of
-the members they connect to; the outer columns are then spread over the full
-height of the member column, while the exchange lanes stay level with their
-members.
+several members draw on is drawn once.
 
-Escher's JSON schema carries no per-segment style, so edge dashing happens on
-the rendered SVG: `cross_feeding_segments` returns the ids of every segment
-touching a cross-fed compound, and `svg_editor.dash_segments` (or
-`EscherSVG_processing(dashedEdges=...)`) dashes them.
+### Ordered by connectivity
+
+The member column is ordered by how many compounds each member exchanges:
+the busiest member in the middle, the quietest at the two ends. The input and
+output columns take the same shape — the compounds with the most edges in the
+middle, the one-off compounds at the ends — and a compound goes in whichever
+half of its column, top or bottom, its own members mostly occupy. The busiest
+traffic therefore crosses the middle of the map on short edges, and the long
+thin edges are left to the ends where they cross little.
+
+Exchange-lane nodes are the exception: they still sit at the mean height of
+the members they link, because reading cross-feeding level with the members
+doing it is the point of the lanes.
+
+### Curved edges
+
+`marker -> metabolite` segments are drawn as S-curves (`MapStyle.edge_curve`,
+`"s"` by default): each Bezier handle keeps its own endpoint's height, so an
+edge leaves the marker and reaches the compound horizontally and climbs in
+between. Edges sharing a marker or a compound bundle instead of fanning out
+as straight diagonals, and arriving horizontally puts them on the node's
+inner side, clear of the outward-running labels. `edge_curve="chord"` puts
+both handles on the straight line between the endpoints, which is how the
+edges were drawn before.
+
+A steep edge has no room to make that turn — the exchange lanes are only
+`mixed_lane_dx` across but can span the whole member column — so an edge is
+blended back towards its chord as `|dx| / |dy|` falls below
+`curve_steepness`; without that, several lane edges would run vertically at
+the same x and hide each other.
+
+### Scaling with the community
+
+Two things scale with how large the community is, so a map of forty members
+reads like a map of five rather than like a ribbon:
+
+- the exchange lanes move out to `lane_dx_fraction` of the tallest member
+  column (`mixed_lane_dx` is the floor), which keeps lane edges slanted
+  enough to be told apart;
+- `MapStyle.max_aspect` (5 by default) bounds the exported canvas at 1:5 and
+  5:1. Blocks are tiled `n` across into a grid instead of stacked in one
+  column — the fewest per row that fits — and a map still too tall has its
+  lanes and columns pushed further out, which cannot collide with anything
+  and leaves every height where it was. A map that is somehow too wide has
+  its vertical spacings opened up instead. `max_aspect=None`
+  (`--no-aspect-limit`) restores the single stacked column.
+
+### What only the SVG can carry
+
+Escher's JSON schema has no per-segment style and no box node — marker
+circles and a floating reaction label are all it can say about a member — so
+two things happen on the rendered SVG instead:
+
+- `cross_feeding_segments` returns the ids of every segment touching a
+  cross-fed compound, and `svg_editor.dash_segments` (or
+  `EscherSVG_processing(dashedEdges=...)`) dashes them;
+- `svg_editor.draw_member_boxes` (on by default in `EscherSVG_processing`)
+  draws a labelled box on each reaction anchor — the point where its two
+  short marker segments meet — and moves the reaction's own label inside it,
+  so a member reads as a node instead of as the bare vertex where its edges
+  happen to meet. This restores the notebook's ASV rectangles, which found
+  the same segments but placed the box with offsets tuned to one figure's
+  viewBox.
 
 ```python
 dashed = cross_feeding_segments(json.load(open("map.json")))
-EscherSVG_processing("map.svg", dashedEdges=dashed, mark_asv_nodes=False)
+EscherSVG_processing("map.svg", dashedEdges=dashed)
 ```
 
 Run against `ASVMetaboliteInteractions.csv` it reproduces the reference map's

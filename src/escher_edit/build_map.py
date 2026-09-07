@@ -19,12 +19,35 @@ condition**:
 * compounds only ever consumed sit in a left input column;
 * compounds only ever produced sit in a right output column;
 * compounds consumed by one member and produced by another — the cross-fed
-  ones — sit in two narrow lanes flanking the member column, level with the
-  members that exchange them.
+  ones — sit in two lanes flanking the member column, level with the members
+  that exchange them. The lanes stand off as far as the member column is tall
+  (``lane_dx_fraction`` of it), so their edges keep enough slant to be told
+  apart however many members feed into them.
 
-Within each region a node is placed at the mean height of the members it
-connects to, so edges stay short and cross-feeding reads off the middle of
-the map.
+Everything is ordered by connectivity. The members that exchange the most
+compounds sit in the middle of the member column and the quietest at its two
+ends, and the input and output columns take the same shape — the compounds
+with the most edges in the middle, the one-off compounds at the ends — with
+each compound in the half of its column, top or bottom, that its own members
+mostly occupy. So the busiest traffic crosses the middle of the map on short
+edges, and the long thin edges are left to the ends where they cross little.
+An exchange-lane node still sits at the mean height of the members it links,
+because reading cross-feeding level with the members doing it is the whole
+point of the lanes.
+
+Edges are drawn as S-curves: each Bezier handle sits at its own endpoint's
+height, so a segment leaves the marker and reaches the compound horizontally
+and does its climbing in between. Edges sharing a marker or a compound
+therefore bundle instead of fanning out as straight diagonals across the
+column, which is most of what makes a crowded block hard to read. Steep
+edges — the exchange lanes, where a compound can sit thousands of px away
+vertically but only a lane's width across — are blended back towards their
+chord so they do not collapse into coincident vertical runs.
+
+Blocks are tiled into a grid rather than stacked in one column, and a block
+that is still too tall gets its input and output columns pushed outwards, so
+the exported canvas stays inside ``MapStyle.max_aspect`` (5:1 by default) no
+matter how many members or conditions the community has.
 
 Reaction ``bigg_id`` is ``f"{member}{model_id}"`` (e.g.
 ``Acetivibrio.1RC-ABX_12.5``) and ``name`` is the bare member name, matching
@@ -51,8 +74,10 @@ An empty cell means the member is absent from that condition; an explicit
 out of the map, and the two are counted separately in the log.
 """
 import argparse
+import copy
 import csv
 import logging
+import math
 import uuid
 from json import dump
 from pathlib import Path
@@ -65,6 +90,25 @@ ESCHER_SCHEMA = "https://escher.github.io/escher/jsonschema/1-0-0#"
 #: ``<diet>-ABX_<day>`` suffix, so ``model_mapping.build_direction_tracking``
 #: cannot parse a map built from it.
 AVERAGE_CONDITION = "ave"
+
+#: Radii Escher renders nodes at, used to keep a node's own circle inside the
+#: canvas when the block extents are measured.
+NODE_RADIUS = 20.0
+MARKER_RADIUS = 5.0
+
+#: How many times :func:`build_escher_map` may re-lay a map out while fitting
+#: it to ``MapStyle.max_aspect``. Widening a block hits the target exactly, so
+#: the extra passes only cover the grid changing shape underneath it.
+ASPECT_PASSES = 5
+
+#: Slack on the aspect test that ends the fitting loop, so a canvas landing a
+#: rounding error short of the limit is not sent round again. What is left is
+#: made up with canvas padding, which is exact.
+ASPECT_TOLERANCE = 1e-6
+
+#: How much of a dimension that padding may quietly add. More than this and
+#: the layout genuinely would not stretch, which is worth a warning.
+ASPECT_PAD_WARNING = 1e-3
 
 
 # --------------------------------------------------------------- parsing
@@ -265,6 +309,16 @@ def build_member_reactions(fluxes_by_member, model_id="",
 # ------------------------------------------------------------- geometry
 
 
+def _label_width(text, font_px):
+    """Rough on-map width of a label, in px.
+
+    Escher anchors label text at ``label_x`` and runs it to the right, so this
+    is how far past that anchor a label reaches. 0.6 em per character is the
+    usual approximation for the sans-serif face Escher renders with.
+    """
+    return 0.6 * font_px * len(str(text))
+
+
 class MapStyle:
     """Column layout for a community exchange map.
 
@@ -277,43 +331,119 @@ class MapStyle:
     * **outputs** — produced but never consumed — in a right column at
       ``output_column_dx``;
     * **exchanged** — consumed by one member and produced by another — in two
-      narrow lanes flanking the member column at ``±mixed_lane_dx``, level
-      with the members that consume and produce them.
+      lanes flanking the member column, level with the members that consume
+      and produce them.
 
-    Within each region a node sits at the mean height of the members it links
-    to, pushed apart as far as ``min_node_spacing`` (outer columns) or
-    ``lane_node_spacing`` (exchange lanes) requires. The lanes get the wider
-    default because they hold the busiest compounds, whose barycentres all
-    fall near the middle of the member column. ``lane_span_fraction`` keeps a
-    lane from growing into a fourth full-height column: when the packed lane
-    would exceed that fraction of the member column's height, its spacing is
-    compressed to fit, still centred on the lane's barycentre.
+    ``mixed_lane_dx`` is a floor, not the offset: a lane is only as slanted
+    as its width lets it be, so a lane that keeps 240 px while the member
+    column grows to twenty thousand ends up with every one of its edges
+    running vertically on top of the others. The offset therefore scales with
+    the tallest member column in the map — ``lane_dx_fraction`` of it — which
+    keeps the lane edges as separable in a forty-member community as in a
+    five-member one (see :meth:`fitted_lane_dx`). Set ``lane_dx_fraction`` to
+    0 to stop the lanes growing with the column; the aspect fit below may
+    still move them.
+
+    Members are ordered by connectivity — the ones exchanging the most
+    compounds in the middle of the column, the quietest at its two ends — and
+    the input and output columns take the same shape, ``min_node_spacing``
+    apart at the closest (see :func:`_connectivity_column`). Which half of
+    its column a compound goes in, top or bottom, is decided by where its own
+    members lie, so it still sits on the side its edges come from.
+
+    An exchange-lane node instead sits at the mean height of the members it
+    links to, pushed apart as far as ``lane_node_spacing`` requires: being
+    level with those members is the point of drawing it there. The lanes get
+    the wider spacing default because they hold the busiest compounds, whose
+    barycentres all fall near the middle of the member column.
+    ``lane_span_fraction`` keeps a lane from growing into a fourth
+    full-height column: when the packed lane would exceed that fraction of
+    the member column's height, its spacing is compressed to fit, still
+    centred on the lane's barycentre.
 
     ``span_columns`` makes the input and output columns run the full height of
     the member column — they read as columns rather than as a knot in the
-    middle — while the exchange lanes always stay level with their members,
-    which is the point of drawing them there.
+    middle. Without it each half packs tight around the middle instead.
 
     ``input_column_dx`` and ``output_column_dx`` default to ``None``, which
     fits the columns as close to the member column as the exchange-lane
     labels allow (see :meth:`fitted_column_dx`). Pass numbers to place them
     by hand.
+
+    Edges
+    -----
+    ``edge_curve`` picks the shape of the ``marker -> metabolite`` segments:
+
+    * ``"s"`` (the default) holds each Bezier handle at its own endpoint's
+      height, so an edge leaves the marker horizontally, climbs in the middle
+      of its run, and arrives at the compound horizontally. Edges that share
+      a marker or a compound bundle together instead of fanning across the
+      map as straight diagonals, and arriving horizontally puts them on the
+      node's inner side, clear of the outward-running labels.
+    * ``"chord"`` puts both handles on the straight line between the
+      endpoints, reproducing the flat edges of earlier maps.
+
+    A steep edge has no room to make that turn: the exchange lanes are only
+    a lane's width across but can span the whole member column vertically,
+    and a full S-curve there would leave several edges running vertically at
+    the same x, on top of each other. ``curve_steepness`` is the ``|dx|/|dy|``
+    at which an edge still gets the full curve; below it the handles are
+    blended back towards the chord, reaching the flat chord as the run goes
+    vertical. 0 turns the blending off and curves every edge fully.
+
+    Aspect ratio
+    ------------
+    ``max_aspect`` bounds the shape of the exported canvas: the figure is
+    never narrower than ``1:max_aspect`` nor wider than ``max_aspect:1``,
+    however many members or conditions it holds. The bound is symmetric, so
+    it can be given either way up — 5 and 0.2 ask for the same thing. Two
+    mechanisms get it there, in order:
+
+    * blocks are tiled ``n`` across into a grid rather than stacked in one
+      column (see :func:`_choose_n_cols`), with ``block_column_gap`` between
+      grid columns and ``block_gap`` between rows;
+    * a map that is still too tall — one tall condition on its own, say — has
+      its lanes and its input and output columns pushed outwards together,
+      which keeps the room the labels between them need, can never collide
+      with anything, and leaves every height untouched. A block whose
+      compounds are all cross-fed has no column nodes to move, which is why
+      the lanes move too. Positions given by hand through
+      ``input_column_dx``, ``output_column_dx`` or ``mixed_lane_dx`` are
+      starting points for this, not exemptions from it.
+
+    A map that is somehow too *wide* has its vertical spacings opened up
+    instead, so the height it gains carries nodes rather than blank canvas.
+    Set ``max_aspect`` to ``None`` to place blocks in a single column and
+    leave the proportions alone.
     """
 
     def __init__(self, member_pitch=420.0, input_column_dx=None,
                  output_column_dx=None, mixed_lane_dx=240.0,
-                 column_clearance=160.0,
+                 lane_dx_fraction=0.08, column_clearance=160.0,
                  min_node_spacing=90.0, lane_node_spacing=200.0,
                  lane_span_fraction=0.6,
                  span_columns=True, marker_offset=20.0,
                  member_label_gap=60.0, label_pad=22.0, label_font_px=20.0,
                  reaction_label_font_px=30.0, bezier_fracs=(0.25, 0.75),
-                 block_gap=900.0, block_label_gap=280.0, canvas_margin=400.0):
+                 edge_curve="s", curve_steepness=0.5,
+                 max_aspect=5.0, block_gap=900.0, block_column_gap=700.0,
+                 block_label_gap=280.0, block_label_font_px=60.0,
+                 canvas_margin=400.0):
+        if edge_curve not in ("s", "chord"):
+            raise ValueError(
+                f"edge_curve must be 's' or 'chord', not {edge_curve!r}")
+        if max_aspect is not None and max_aspect <= 0:
+            raise ValueError(f"max_aspect must be positive: {max_aspect!r}")
+        if max_aspect is not None and max_aspect < 1:
+            # the bound is symmetric, so "1:5" written as 0.2 asks for the
+            # same band as 5 and is taken to mean it
+            max_aspect = 1.0 / max_aspect
         self.member_pitch = member_pitch
         self.span_columns = span_columns
         self.input_column_dx = input_column_dx
         self.output_column_dx = output_column_dx
         self.mixed_lane_dx = mixed_lane_dx
+        self.lane_dx_fraction = lane_dx_fraction
         self.column_clearance = column_clearance
         self.min_node_spacing = min_node_spacing
         self.lane_node_spacing = lane_node_spacing
@@ -324,11 +454,30 @@ class MapStyle:
         self.label_font_px = label_font_px
         self.reaction_label_font_px = reaction_label_font_px
         self.bezier_fracs = bezier_fracs
+        self.edge_curve = edge_curve
+        self.curve_steepness = curve_steepness
+        self.max_aspect = max_aspect
         self.block_gap = block_gap
+        self.block_column_gap = block_column_gap
         self.block_label_gap = block_label_gap
+        self.block_label_font_px = block_label_font_px
         self.canvas_margin = canvas_margin
 
-    def fitted_column_dx(self, compounds):
+    def fitted_lane_dx(self, column_height):
+        """Offset for the exchange lanes given the tallest member column.
+
+        A lane edge crosses ``lane_dx`` horizontally however far it climbs, so
+        the taller the member column the steeper — and the more overplotted —
+        every edge in the lane becomes. Scaling the offset with the column
+        keeps their slant, and so their separation, roughly constant as the
+        community grows; ``mixed_lane_dx`` is the floor for the small
+        communities that do not need the room.
+        """
+        if not self.lane_dx_fraction:
+            return self.mixed_lane_dx
+        return max(self.mixed_lane_dx, self.lane_dx_fraction * column_height)
+
+    def fitted_column_dx(self, compounds, lane_dx=None):
         """Tightest offset for the input/output columns, in px.
 
         An exchange-lane node's label runs outwards from the lane, so the
@@ -336,16 +485,33 @@ class MapStyle:
         plus ``column_clearance``. Fitting to that keeps the figure compact
         without the lane labels colliding with the column nodes.
         """
-        widest = max((len(compound) for compound in compounds), default=8)
-        lane_label_edge = (self.mixed_lane_dx + self.label_pad
-                           + 0.6 * self.label_font_px * widest)
+        widest = max((_label_width(compound, self.label_font_px)
+                      for compound in compounds),
+                     default=_label_width("x" * 8, self.label_font_px))
+        lane_label_edge = ((self.mixed_lane_dx if lane_dx is None else lane_dx)
+                           + self.label_pad + widest)
         return lane_label_edge + self.column_clearance
 
-    def column_positions(self, compounds):
+    def column_positions(self, compounds, lane_dx=None):
         """``(input_x, output_x)`` — the fitted offsets, or the overrides."""
-        fitted = self.fitted_column_dx(compounds)
+        fitted = self.fitted_column_dx(compounds, lane_dx)
         return (self.input_column_dx if self.input_column_dx is not None else -fitted,
                 self.output_column_dx if self.output_column_dx is not None else fitted)
+
+    def vertically_scaled(self, factor):
+        """A copy with every height-setting spacing multiplied by ``factor``.
+
+        Only the spacings that decide how tall a block comes out are touched —
+        the member pitch, the two node spacings, and the gap between rows of
+        blocks. The label gaps are left alone because they are set by the size
+        of the text, not by how much room the figure has.
+        """
+        scaled = copy.copy(self)
+        scaled.member_pitch *= factor
+        scaled.min_node_spacing *= factor
+        scaled.lane_node_spacing *= factor
+        scaled.block_gap *= factor
+        return scaled
 
 
 def classify_compounds(members):
@@ -435,11 +601,33 @@ def cross_feeding_segments(escher_map, prefix="s"):
             sorted(found, key=lambda s: (len(s), s))]
 
 
-def _bezier(ax, ay, bx, by, fracs):
-    """Bezier handles placed along the chord from (ax, ay) to (bx, by)."""
-    f1, f2 = fracs
-    return ({"x": ax + (bx - ax) * f1, "y": ay + (by - ay) * f1},
-            {"x": ax + (bx - ax) * f2, "y": ay + (by - ay) * f2})
+def _chord_blend(dx, dy, steepness):
+    """How much of the straight chord a segment keeps, in ``[0, 1]``.
+
+    0 is a full S-curve — the handles stay level with their own endpoints —
+    and 1 is the flat chord. An edge with room to turn, ``|dx| >= steepness *
+    |dy|``, gets the full curve; from there the blend climbs to 1 as the run
+    goes vertical, because edges that are nearly vertical would otherwise all
+    curve onto the same x and hide each other.
+    """
+    reach = steepness * abs(dy)
+    if reach <= 0:
+        return 0.0
+    return max(0.0, 1.0 - abs(dx) / reach)
+
+
+def _bezier(ax, ay, bx, by, style):
+    """Bezier handles for the segment from (ax, ay) to (bx, by).
+
+    ``style.bezier_fracs`` places both handles along the run in x; what they
+    do in y is what ``style.edge_curve`` decides — see :class:`MapStyle`.
+    """
+    f1, f2 = style.bezier_fracs
+    dx, dy = bx - ax, by - ay
+    blend = (1.0 if style.edge_curve == "chord"
+             else _chord_blend(dx, dy, style.curve_steepness))
+    return ({"x": ax + dx * f1, "y": ay + dy * f1 * blend},
+            {"x": ax + dx * f2, "y": by - dy * (1.0 - f2) * blend})
 
 
 class _Counter:
@@ -474,39 +662,113 @@ def _pack(desired, min_spacing):
     return {key: y + shift for key, y in zip(order, ys)}
 
 
-def _spread(desired, top, bottom, min_spacing):
-    """Distribute items evenly between ``top`` and ``bottom``.
+def _organ_pipe(items, weight):
+    """Order items with the heaviest in the middle and the lightest at the ends.
 
-    Items keep the order of their preferred heights — that ordering is what
-    keeps edges from crossing — but are spaced evenly so the column runs the
-    full height of the member column instead of bunching at the barycentre.
+    The ranked items are dealt alternately to the two sides of the centre, so
+    the run reads 5th, 3rd, 1st, 2nd, 4th heaviest from one end to the other.
+    Items of equal weight keep the order they arrived in.
     """
-    if not desired:
-        return {}
-    order = sorted(desired, key=lambda key: (desired[key], str(key)))
-    if len(order) == 1:
-        return {order[0]: (top + bottom) / 2}
-    step = max((bottom - top) / (len(order) - 1), min_spacing)
-    start = (top + bottom) / 2 - step * (len(order) - 1) / 2
-    return {key: start + index * step for index, key in enumerate(order)}
+    ranked = sorted(items, key=weight, reverse=True)
+    above, below = [], []
+    for rank, item in enumerate(ranked):
+        (below if rank % 2 else above).append(item)
+    return list(reversed(above)) + below
+
+
+def _column_halves(compounds, members_at, middle):
+    """Split a column's compounds into ``(top, bottom)`` by where their members
+    are.
+
+    A compound goes with the half of the member column holding most of the
+    members it touches. An even split is settled on their mean height, and a
+    compound whose members balance exactly around the middle — one that only
+    the centre member touches, most often — has no preference either way, so
+    it is dealt to the emptier half and the column stays balanced.
+    """
+    top, bottom, undecided = [], [], []
+    for compound in compounds:
+        heights = members_at[compound]
+        above = sum(1 for y in heights if y < middle)
+        below = sum(1 for y in heights if y > middle)
+        mean = sum(heights) / len(heights)
+        if above != below:
+            (top if above > below else bottom).append(compound)
+        elif mean != middle:
+            (top if mean < middle else bottom).append(compound)
+        else:
+            undecided.append(compound)
+    for compound in undecided:
+        (top if len(top) <= len(bottom) else bottom).append(compound)
+    return top, bottom
+
+
+def _connectivity_column(compounds, members_at, top, bottom,
+                         min_spacing, span):
+    """Place one compound column by how many members each compound touches.
+
+    The compounds with the most edges sit in the middle of the column and the
+    one-off compounds at its two ends. That puts them level with the members
+    that have the most edges — who are in the middle of the member column for
+    the same reason — so the busiest traffic crosses the middle of the map on
+    short edges and the long thin ones are left to the ends, where there is
+    room for them to cross nothing.
+
+    Which end a compound works out from is decided by its members: one whose
+    members lie mostly in the top half of the member column goes in the top
+    half of the column, and likewise for the bottom (see
+    :func:`_column_halves`), so a compound still sits on the side its edges
+    come from. Within a half the compounds run from the busiest, next to the
+    middle, out to the quietest at the end; compounds with the same number of
+    edges are ordered by which sits closer to the middle already.
+
+    ``members_at`` maps each compound to the heights of the members it
+    touches — how many of them there are is its connectivity, and where they
+    are is its half.
+
+    With ``span`` each half fills its half of the member column; without it
+    the halves pack together at ``min_spacing`` around the middle.
+    """
+    middle = (top + bottom) / 2
+    placed = {}
+    for half, direction in zip(_column_halves(compounds, members_at, middle),
+                               (-1, 1)):
+        if not half:
+            continue
+        order = sorted(half, key=lambda c: (
+            -len(members_at[c]),
+            direction * sum(members_at[c]) / len(members_at[c]),
+            c))
+        room = (bottom - top) / 2 if span else 0.0
+        step = max(room / len(order), min_spacing)
+        for index, compound in enumerate(order):
+            placed[compound] = middle + direction * (index + 0.5) * step
+    return placed
 
 
 def _layout_block(members, style, compound_names, node_ids, segment_ids,
-                  columns):
+                  columns, lane_dx):
     """Lay out one condition as a three-column block, in local coordinates.
 
-    The member column runs down ``x = 0`` starting at ``y = 0``; compound
-    columns may extend above and below it. ``columns`` is the
-    ``(input_x, output_x)`` pair, shared by every block so the columns line
-    up. Returns ``(nodes, reactions)`` with ``reactions`` as a list in member
-    order.
+    The member column runs down ``x = 0`` starting at ``y = 0``, ordered by
+    connectivity rather than by name; compound columns may extend above and
+    below it. ``columns`` is the
+    ``(input_x, output_x)`` pair and ``lane_dx`` the exchange-lane offset,
+    both shared by every block so the map's columns line up. Returns
+    ``(nodes, reactions)`` with ``reactions`` as a list in member order.
     """
     input_x, output_x = columns
-    member_y = {index: index * style.member_pitch
-                for index in range(len(members))}
+    # The busiest members go in the middle of the column, which is where the
+    # busiest compounds end up too, so most of the traffic is short and
+    # horizontal and the quiet members at the two ends have room to spread.
+    member_y = {index: slot * style.member_pitch for slot, index in enumerate(
+        _organ_pipe(range(len(members)),
+                    lambda index: len(members[index]["fluxes"])))}
     inputs, outputs, exchanged = classify_compounds(members)
 
-    # Barycentre: a compound wants to sit level with the members it links to.
+    # Where a compound's members lie, and how many of them there are: the
+    # first decides which half of its column it goes in, the second how close
+    # to the middle of that column it sits.
     users = {}
     for index, member in enumerate(members):
         for compound in member["fluxes"]:
@@ -528,22 +790,22 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             go_left = consumers > producers
         (left_lane if go_left else right_lane).append(compound)
 
-    top, bottom = 0.0, member_y[len(members) - 1]
+    top, bottom = 0.0, (len(members) - 1) * style.member_pitch
     nodes, compound_node = {}, {}
     for compounds, x, span in ((inputs, input_x, True),
                                (outputs, output_x, True),
-                               (left_lane, -style.mixed_lane_dx, False),
-                               (right_lane, style.mixed_lane_dx, False)):
-        wanted = {c: desired[c] for c in compounds}
-        if span and style.span_columns:
-            column = _spread(wanted, top, bottom, style.min_node_spacing)
-        elif span:
-            column = _pack(wanted, style.min_node_spacing)
+                               (left_lane, -lane_dx, False),
+                               (right_lane, lane_dx, False)):
+        if span:
+            column = _connectivity_column(
+                compounds, users, top, bottom,
+                style.min_node_spacing, style.span_columns)
         else:
             # the exchange lanes stay level with their members: compress the
             # spacing whenever the packed lane would exceed lane_span_fraction
             # of the member column's height (_pack re-centres on the
             # barycentre, so the compressed lane stays in the middle)
+            wanted = {c: desired[c] for c in compounds}
             lane_spacing = style.lane_node_spacing
             if (style.lane_span_fraction is not None and len(wanted) > 1
                     and bottom > top):
@@ -555,7 +817,8 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             # tooltip metadata), so labels left of the axis are shifted by the
             # width of the compound ID.
             if x < 0:
-                label_x = x - style.label_pad - 0.6 * style.label_font_px * len(compound)
+                label_x = x - style.label_pad - _label_width(
+                    compound, style.label_font_px)
             else:
                 label_x = x + style.label_pad
             node_id = node_ids.next()
@@ -593,8 +856,8 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
         for compound, flux in sorted(member["fluxes"].items()):
             marker = reactant_marker if flux < 0 else product_marker
             target = nodes[compound_node[compound]]
-            b1, b2 = _bezier(nodes[marker]["x"], cy, target["x"], target["y"],
-                             style.bezier_fracs)
+            b1, b2 = _bezier(nodes[marker]["x"], cy,
+                             target["x"], target["y"], style)
             segments[segment_ids.next()] = {
                 "from_node_id": marker,
                 "to_node_id": compound_node[compound],
@@ -607,7 +870,8 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             "bigg_id": member["bigg_id"],
             "reversibility": False,
             # centred over the midmarker, clear of both exchange lanes
-            "label_x": -0.3 * style.reaction_label_font_px * len(member["name"]),
+            "label_x": -_label_width(
+                member["name"], style.reaction_label_font_px) / 2,
             "label_y": cy - style.member_label_gap,
             "gene_reaction_rule": "",
             "genes": [],
@@ -620,20 +884,181 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
     return nodes, reactions
 
 
+# ------------------------------------------------------------- assembly
+
+
+def _block_extent(nodes, reactions, style, caption="", caption_x=0.0):
+    """``(left, right, top, bottom)`` of one laid-out block.
+
+    Labels count towards the extent, not just the nodes they belong to: a
+    right-hand label reaches past its node by its own width, and the caption a
+    block carries in a multi-block map sits ``block_label_gap`` above
+    everything else. Node radii are included so a circle on the edge of the
+    map is not sliced in half by the canvas.
+    """
+    lefts, rights, tops, bottoms = [], [], [], []
+
+    def add(left, right, top, bottom):
+        lefts.append(left)
+        rights.append(right)
+        tops.append(top)
+        bottoms.append(bottom)
+
+    for node in nodes.values():
+        radius = (NODE_RADIUS if node.get("node_type") == "metabolite"
+                  else MARKER_RADIUS)
+        add(node["x"] - radius, node["x"] + radius,
+            node["y"] - radius, node["y"] + radius)
+        if "label_x" in node:
+            width = _label_width(node.get("bigg_id", ""), style.label_font_px)
+            add(node["label_x"], node["label_x"] + width,
+                node["label_y"] - style.label_font_px, node["label_y"])
+    for reaction in reactions:
+        width = _label_width(reaction.get("name", ""),
+                             style.reaction_label_font_px)
+        add(reaction["label_x"], reaction["label_x"] + width,
+            reaction["label_y"] - style.reaction_label_font_px,
+            reaction["label_y"])
+    if caption:
+        caption_y = _caption_y(nodes, style)
+        add(caption_x,
+            caption_x + _label_width(caption, style.block_label_font_px),
+            caption_y - style.block_label_font_px, caption_y)
+    return min(lefts), max(rights), min(tops), max(bottoms)
+
+
+def _caption_y(nodes, style):
+    """Height of a block's caption — ``block_label_gap`` above its top node."""
+    return min(node["y"] for node in nodes.values()) - style.block_label_gap
+
+
+def _tile(extents, n_cols, style):
+    """Place blocks in a grid ``n_cols`` across, row by row.
+
+    A grid column is as wide as its blocks' bounding boxes together, and each
+    of them is placed against the column's left edge rather than its own, so
+    their member axes stay on one vertical line; a row is likewise as tall as
+    its blocks together, aligned on the top of the row.
+
+    Returns ``(offsets, width, height)`` — the ``(dx, dy)`` to move each block
+    by, in block order, and the size of the grid they end up filling with its
+    top-left corner at the origin.
+    """
+    rows = [extents[i:i + n_cols] for i in range(0, len(extents), n_cols)]
+
+    x_offsets, cursor = [], 0.0
+    for column in range(n_cols):
+        cells = [row[column] for row in rows if column < len(row)]
+        left = min(left for left, _, _, _ in cells)
+        right = max(right for _, right, _, _ in cells)
+        x_offsets.append(cursor - left)
+        cursor += (right - left) + style.block_column_gap
+    width = max(cursor - style.block_column_gap, 0.0)
+
+    offsets, cursor = [], 0.0
+    for row in rows:
+        top = min(top for _, _, top, _ in row)
+        bottom = max(bottom for _, _, _, bottom in row)
+        for column in range(len(row)):
+            offsets.append((x_offsets[column], cursor - top))
+        cursor += (bottom - top) + style.block_gap
+    height = max(cursor - style.block_gap, 0.0)
+    return offsets, width, height
+
+
+def _canvas_size(width, height, style):
+    """The exported canvas — the tiled grid plus its margin on every side."""
+    return (width + 2 * style.canvas_margin, height + 2 * style.canvas_margin)
+
+
+def _within_aspect(width, height, max_aspect):
+    """Is ``width:height`` inside ``1:max_aspect`` .. ``max_aspect:1``?
+
+    The corrections aim at the limit exactly, so the comparison is made with a
+    hair of tolerance — landing a rounding error short of the target is not
+    worth another pass over the whole map.
+    """
+    if max_aspect is None or not width or not height:
+        return True
+    ratio = width / height
+    return ((1.0 / max_aspect) * (1 - ASPECT_TOLERANCE) <= ratio
+            <= max_aspect * (1 + ASPECT_TOLERANCE))
+
+
+def _choose_n_cols(extents, style):
+    """How many blocks to put in a row.
+
+    Blocks per row is the one control that trades the map's height for its
+    width, so it is chosen first: width grows and height falls as it rises,
+    which makes the fewest blocks per row that land inside ``max_aspect`` also
+    the tallest, most column-like arrangement that qualifies. When no count
+    fits — a single very tall block, most often — the closest one is used and
+    :func:`build_escher_map` widens the blocks themselves from there.
+    """
+    if style.max_aspect is None or len(extents) < 2:
+        return 1
+
+    def _miss(n_cols):
+        _, grid_width, grid_height = _tile(extents, n_cols, style)
+        width, height = _canvas_size(grid_width, grid_height, style)
+        ratio = math.log(width / height) if width and height else 0.0
+        limit = math.log(style.max_aspect)
+        return max(0.0, -limit - ratio, ratio - limit)
+
+    best, best_miss = 1, None
+    for n_cols in range(1, len(extents) + 1):
+        miss = _miss(n_cols)
+        if best_miss is None or miss < best_miss:
+            best, best_miss = n_cols, miss
+        if not miss:
+            break
+    return best
+
+
+def _shift_block(nodes, reactions, dx, dy):
+    """Move a laid-out block by ``(dx, dy)``.
+
+    Bezier handles hold absolute coordinates, so they have to travel with the
+    segment they shape — a handle left behind drags its edge back towards
+    wherever the block was laid out.
+    """
+    for node in nodes.values():
+        node["x"] += dx
+        node["y"] += dy
+        if "label_x" in node:
+            node["label_x"] += dx
+            node["label_y"] += dy
+    for reaction in reactions:
+        reaction["label_x"] += dx
+        reaction["label_y"] += dy
+        for segment in reaction["segments"].values():
+            for handle in (segment["b1"], segment["b2"]):
+                if handle:
+                    handle["x"] += dx
+                    handle["y"] += dy
+
+
 def build_escher_map(blocks, compound_names=None,
                      map_name="community_exchange_map",
                      map_description=None, style=None):
     """Assemble a complete Escher map from one or more blocks of members.
 
+    Blocks are tiled into a grid and, if that is not enough, the lanes and
+    the input/output columns are pushed outwards, until the canvas is inside
+    ``style.max_aspect`` (see :class:`MapStyle`) — so the figure keeps a
+    usable shape however large the community is. Every block is laid out
+    against the same lane and column positions, and blocks sharing a grid
+    column are placed against the same left edge, so their member axes line
+    up down the map.
+
     Parameters
     ----------
     blocks : list[tuple[str, list[dict]]] or list[dict]
         Either ``[(block_label, members), ...]`` — one block per condition,
-        stacked vertically and captioned with a ``text_labels`` entry, in
-        the style of the reference map's "Days 5 to 7" captions — or a bare
-        member list for a single unlabelled block. Compounds are collapsed
-        within a block, never across blocks, so each condition keeps its own
-        node set.
+        each captioned with a ``text_labels`` entry in the style of the
+        reference map's "Days 5 to 7" captions — or a bare member list for a
+        single unlabelled block. Compounds are collapsed within a block,
+        never across blocks, so each condition keeps its own node set.
     compound_names : dict[str, str] or None
         Compound ID -> display name for metabolite node ``name`` fields.
     map_name, map_description : str
@@ -651,62 +1076,129 @@ def build_escher_map(blocks, compound_names=None,
     style = style or MapStyle()
     compound_names = compound_names or {}
 
-    if not any(members for _, members in blocks):
+    drawable = []
+    for block_label, members in blocks:
+        if members:
+            drawable.append((block_label, members))
+        else:
+            log.warning("block %r has no members; skipped", block_label)
+    if not drawable:
         raise ValueError("no members to draw")
 
-    nodes, reactions, text_labels = {}, {}, {}
-    node_ids, segment_ids = _Counter(), _Counter()
-    reaction_ids, label_ids = _Counter(), _Counter()
-
-    # One column position for the whole map, fitted to the widest compound
-    # label anywhere in it, so blocks stay aligned with each other.
+    # One geometry for the whole map — lanes fitted to its tallest member
+    # column, columns to the widest compound label anywhere in it — so the
+    # blocks stay aligned with each other and read at the same scale.
+    lane_dx = style.fitted_lane_dx(
+        max((len(members) - 1) * style.member_pitch for _, members in drawable))
     columns = style.column_positions(
-        {c for _, members in blocks for m in members for c in m["fluxes"]})
+        {c for _, members in drawable for m in members for c in m["fluxes"]},
+        lane_dx)
 
-    cursor = 0.0
-    for block_label, members in blocks:
-        if not members:
-            log.warning("block %r has no members; skipped", block_label)
-            continue
-        block_nodes, block_reactions = _layout_block(
-            members, style, compound_names, node_ids, segment_ids, columns)
+    def lay_out(style, columns, lane_dx):
+        """Lay every block out in its own local coordinates."""
+        node_ids, segment_ids = _Counter(), _Counter()
+        laid = [(label,) + _layout_block(members, style, compound_names,
+                                         node_ids, segment_ids, columns,
+                                         lane_dx)
+                for label, members in drawable]
+        extents = [_block_extent(nodes, reactions, style, label, columns[0])
+                   for label, nodes, reactions in laid]
+        return laid, extents, segment_ids.value
 
-        top = min(node["y"] for node in block_nodes.values())
-        bottom = max(node["y"] for node in block_nodes.values())
-        shift = cursor - top
-        for node in block_nodes.values():
-            node["y"] += shift
-            if "label_y" in node:
-                node["label_y"] += shift
-        for reaction in block_reactions:
-            reaction["label_y"] += shift
+    laid, extents, n_segments = lay_out(style, columns, lane_dx)
+    n_cols = _choose_n_cols(extents, style)
+    offsets, width, height = _tile(extents, n_cols, style)
 
+    # Tiling alone cannot always reach the target — one condition with forty
+    # members is a ribbon whatever else shares its row — so the blocks
+    # themselves take up the rest. Either correction changes the extents
+    # underneath the grid, hence the re-layout and the further passes.
+    for _ in range(ASPECT_PASSES):
+        canvas_width, canvas_height = _canvas_size(width, height, style)
+        if _within_aspect(canvas_width, canvas_height, style.max_aspect):
+            break
+        ratio = canvas_width / canvas_height
+        if ratio * style.max_aspect < 1.0:
+            # Too tall. Moving the lanes and the columns out by the same delta
+            # widens every block by exactly 2 * delta whichever of them is
+            # outermost — a block whose compounds are all cross-fed has no
+            # column nodes to move — and leaves the gap between them, and so
+            # the room its labels need, exactly as it was. No height changes,
+            # so this converges in one pass.
+            delta = (canvas_height / style.max_aspect - canvas_width) / (2 * n_cols)
+            columns = (columns[0] - delta, columns[1] + delta)
+            lane_dx += delta
+            log.info("aspect %.3f is narrower than 1:%g — moving the columns "
+                     "and lanes %.0f px further out",
+                     ratio, style.max_aspect, delta)
+        else:
+            # too wide: gain the height by opening the vertical spacings, so
+            # it carries nodes rather than blank canvas
+            factor = max(1.0, (canvas_width / style.max_aspect
+                               - 2 * style.canvas_margin) / max(height, 1.0))
+            log.info("aspect %.3f is wider than %g:1 — opening the vertical "
+                     "spacing %.2fx", ratio, style.max_aspect, factor)
+            style = style.vertically_scaled(factor)
+        laid, extents, n_segments = lay_out(style, columns, lane_dx)
+        n_cols = _choose_n_cols(extents, style)
+        before = (width, height)
+        offsets, width, height = _tile(extents, n_cols, style)
+        if (width, height) == before:
+            # the correction had nothing to bite on — a block with a single
+            # member and a single compound per side has no spacing to open up
+            break
+
+    nodes, reactions, text_labels = {}, {}, {}
+    reaction_ids, label_ids = _Counter(), _Counter()
+    for (block_label, block_nodes, block_reactions), (dx, dy) in zip(laid, offsets):
+        _shift_block(block_nodes, block_reactions, dx, dy)
         if block_label:
             text_labels[label_ids.next()] = {
-                "x": columns[0],
-                "y": cursor - style.block_label_gap,
+                "x": columns[0] + dx,
+                "y": _caption_y(block_nodes, style),
                 "text": block_label,
             }
-
         nodes.update(block_nodes)
         for reaction in block_reactions:
             reactions[reaction_ids.next()] = reaction
-        cursor += (bottom - top) + style.block_gap
 
-    xs = [n["x"] for n in nodes.values()]
-    ys = [n["y"] for n in nodes.values()]
-    xs += [n["label_x"] for n in nodes.values() if "label_x" in n]
-    ys += [n["label_y"] for n in nodes.values() if "label_y" in n]
-    pad = style.canvas_margin
+    # _tile puts the grid's top-left corner at the origin, extents and all.
+    canvas_width, canvas_height = _canvas_size(width, height, style)
+    canvas_x = canvas_y = -style.canvas_margin
+    if style.max_aspect is not None:
+        # Whatever the layout could not deliver is made up with blank canvas.
+        # Usually that is the last fraction of a pixel — the corrections
+        # converge on the limit from outside, and finishing the job here is
+        # cheaper than another pass over the map. A real shortfall means the
+        # layout would not stretch at all, which is worth saying out loud: the
+        # figure then keeps the promise the ratio makes about the canvas, but
+        # the map inside it is the shape it always was.
+        short_width = canvas_height / style.max_aspect - canvas_width
+        short_height = canvas_width / style.max_aspect - canvas_height
+        padded = 0.0
+        if short_width > 0:
+            canvas_x -= short_width / 2
+            canvas_width += short_width
+            padded = short_width / canvas_width
+        elif short_height > 0:
+            canvas_y -= short_height / 2
+            canvas_height += short_height
+            padded = short_height / canvas_height
+        if padded > ASPECT_PAD_WARNING:
+            log.warning("the layout would not stretch to %g:1 — padding the "
+                        "canvas out to %.0f x %.0f with blank space instead",
+                        style.max_aspect, canvas_width, canvas_height)
     canvas = {
-        "x": min(xs) - pad,
-        "y": min(ys) - pad,
-        "width": (max(xs) - min(xs)) + 2 * pad,
-        "height": (max(ys) - min(ys)) + 2 * pad,
+        "x": canvas_x,
+        "y": canvas_y,
+        "width": canvas_width,
+        "height": canvas_height,
     }
 
-    log.info("built map: %d reactions, %d nodes, %d segments",
-             len(reactions), len(nodes), segment_ids.value)
+    log.info("built map: %d reactions, %d nodes, %d segments, "
+             "%d block(s) %d across, canvas %.0f x %.0f (%.2f:1)",
+             len(reactions), len(nodes), n_segments, len(laid), n_cols,
+             canvas_width, canvas_height, canvas_width / canvas_height)
     return [
         {
             "map_name": map_name,
@@ -814,6 +1306,9 @@ def build_map_from_interactions(csv_path, output_path=None, names_csv=None,
 
 
 def main():
+    # The CLI takes its defaults from MapStyle rather than repeating them, so
+    # the two cannot drift apart; None means "whatever MapStyle says".
+    defaults = MapStyle()
     parser = argparse.ArgumentParser(
         description="Build an Escher map of per-member net exchange "
                     "reactions from community flux data.")
@@ -832,7 +1327,8 @@ def main():
              "(default: every condition except 'ave')")
     parser.add_argument(
         "--separate-maps", action="store_true",
-        help="Write one map per condition instead of stacked blocks")
+        help="Write one map per condition instead of one map of captioned "
+             "blocks tiled into a grid")
     parser.add_argument(
         "--min-flux", type=float, default=0.0,
         help="Drop exchanges with abs(flux) below this (reference used 0.05)")
@@ -841,22 +1337,46 @@ def main():
         help="Exclude the amino acids and extras in config/filter.json, "
              "as the reference figure does (requires --names)")
     parser.add_argument(
-        "--member-pitch", type=float, default=420.0,
-        help="Vertical spacing between member reactions")
+        "--member-pitch", type=float, default=None,
+        help=f"Vertical spacing between member reactions "
+             f"(default: {defaults.member_pitch:g})")
     parser.add_argument(
         "--column-dx", type=float, default=None,
         help="Horizontal distance from the member column to the input and "
              "output columns (default: fitted just clear of the lane labels)")
     parser.add_argument(
-        "--lane-dx", type=float, default=300.0,
-        help="Horizontal distance from the member column to the exchanged-"
-             "compound lanes")
+        "--lane-dx", type=float, default=None,
+        help=f"Smallest horizontal distance from the member column to the "
+             f"exchanged-compound lanes (default: {defaults.mixed_lane_dx:g})")
     parser.add_argument(
-        "--node-spacing", type=float, default=90.0,
-        help="Minimum vertical spacing between nodes in the input/output columns")
+        "--lane-dx-fraction", type=float, default=None,
+        help=f"Grow that distance to this fraction of the tallest member "
+             f"column, so lane edges stay slanted in a big community "
+             f"(default: {defaults.lane_dx_fraction:g}; 0 stops the growth, "
+             f"though the aspect fit may still move the lanes)")
     parser.add_argument(
-        "--lane-spacing", type=float, default=200.0,
-        help="Minimum vertical spacing between nodes in the exchange lanes")
+        "--node-spacing", type=float, default=None,
+        help=f"Minimum vertical spacing between nodes in the input/output "
+             f"columns (default: {defaults.min_node_spacing:g})")
+    parser.add_argument(
+        "--lane-spacing", type=float, default=None,
+        help=f"Minimum vertical spacing between nodes in the exchange lanes "
+             f"(default: {defaults.lane_node_spacing:g})")
+    parser.add_argument(
+        "--edge-curve", choices=("s", "chord"), default=None,
+        help=f"'s' bends each edge out of its marker and into its compound "
+             f"horizontally so edges bundle instead of crossing; 'chord' "
+             f"draws them flat (default: {defaults.edge_curve})")
+    parser.add_argument(
+        "--max-aspect", type=float, default=None,
+        help=f"Keep the canvas within this width:height ratio either way, by "
+             f"tiling the blocks wider and moving the lanes and columns out — "
+             f"which overrides --column-dx and --lane-dx if it has to "
+             f"(default: {defaults.max_aspect:g})")
+    parser.add_argument(
+        "--no-aspect-limit", action="store_true",
+        help="Stack the blocks in one column and let the figure end up "
+             "whatever shape it wants")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -869,6 +1389,23 @@ def main():
             log.warning("--skip-amino-acids matches display names; "
                         "pass --names or nothing will be skipped")
 
+    geometry = {
+        "member_pitch": args.member_pitch,
+        "mixed_lane_dx": args.lane_dx,
+        "lane_dx_fraction": args.lane_dx_fraction,
+        "min_node_spacing": args.node_spacing,
+        "lane_node_spacing": args.lane_spacing,
+        "edge_curve": args.edge_curve,
+        "max_aspect": args.max_aspect,
+    }
+    geometry = {name: value for name, value in geometry.items()
+                if value is not None}
+    if args.column_dx is not None:
+        geometry["input_column_dx"] = -abs(args.column_dx)
+        geometry["output_column_dx"] = abs(args.column_dx)
+    if args.no_aspect_limit:
+        geometry["max_aspect"] = None
+
     build_map_from_interactions(
         args.csv_path,
         output_path=args.output,
@@ -876,14 +1413,7 @@ def main():
         conditions=args.conditions,
         min_abs_flux=args.min_flux,
         skip_names=skip_names,
-        style=MapStyle(
-            member_pitch=args.member_pitch,
-            input_column_dx=-args.column_dx if args.column_dx else None,
-            output_column_dx=args.column_dx,
-            mixed_lane_dx=args.lane_dx,
-            min_node_spacing=args.node_spacing,
-            lane_node_spacing=args.lane_spacing,
-        ),
+        style=MapStyle(**geometry),
         separate_maps=args.separate_maps,
     )
 

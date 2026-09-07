@@ -1,5 +1,5 @@
 """Edit a rendered Escher SVG: restyle labels/edges, fade non-highlighted
-elements, draw ASV node rectangles, and recolor selected segments.
+elements, draw member boxes, and recolor selected segments.
 
 Extracted from ABX_mouse_gut/Notebooks/escher_API_mapping.ipynb, section
 "editing the SVG Escher Map". The ``shapely``-based label-layout helpers are
@@ -33,6 +33,14 @@ class EscherStyle:
     rxn_edge_px: float = 10
     tint_factor: float = 0.5
     stroke_reduction: float = 100
+    #: Member-box fill, border, corner rounding and the room left around the
+    #: label inside it. An empty ``member_box_edge_hex`` takes the border from
+    #: the reaction-label colour, so box, border and text read as one node.
+    member_box_fill_hex: str = "ffffff"
+    member_box_edge_hex: str = ""
+    member_box_edge_px: float = 3
+    member_box_pad: float = 12
+    member_box_radius: float = 8
 
 
 def tint_color(hex_color, tint_factor=0.5):
@@ -234,27 +242,146 @@ def dash_segments(soup, dashed_edges, dash_pattern="8,5"):
     return matched
 
 
-def mark_asv_rectangles(soup, style):
-    """Draw a small rectangle over the start of every segment whose path is a
-    short, nearly-horizontal straight line, marking it as an ASV anchor.
+def _path_points(d):
+    """The coordinate pairs in an SVG path's ``d``, command letters dropped."""
+    numbers = re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", d)
+    return list(zip((float(n) for n in numbers[::2]),
+                    (float(n) for n in numbers[1::2])))
 
-    The offsets are tuned to the ABX map's viewBox, so this is only meaningful
-    for that figure; pass ``mark_asv_nodes=False`` to
-    :func:`EscherSVG_processing` for any other map."""
-    for edge in soup.find_all(class_="segment-group"):
-        segment = edge.find(class_="segment")
-        coordinates = list(map(float, re.split(",| ", segment["d"]
-                                               .replace("M", "").replace("M", "")
-                                               .replace("C", "")
-                                               .replace("undefined", "100000000"))))
-        if abs(coordinates[0] - coordinates[2]) < 30 and abs(coordinates[1] - coordinates[3]) < 3:
-            rect = soup.new_tag("rect")
-            rect["x"] = str(coordinates[0] + float("10734.555053710938") / 2.03)
-            rect["y"] = str(coordinates[1] + float("5315.0328369140625") / 7.66)
-            rect["width"] = "40"
-            rect["height"] = "15"
-            rect["fill"] = f"#{style.rxn_label_hex}"
-            soup.svg.append(rect)
+
+def _reaction_anchor(reaction, max_length=30.0, max_rise=3.0):
+    """Where a reaction sits: the point its marker segments meet.
+
+    Escher draws ``multimarker -> midmarker`` as a short, flat, two-point
+    line, one on each side of the reaction, and both of them touch the
+    midmarker. Which end of a segment that is cannot be read off the path, so
+    the midmarker is identified as the point those short segments have in
+    common. Only one of them qualifies when the other is drawn long — a
+    reaction can be left connected straight to a metabolite by filtering, and
+    a metabolite drawn close in makes that segment short and flat too — so
+    two fallbacks follow: the end no other segment of the reaction touches
+    (the multimarker at the other end carries the metabolite edges, the
+    midmarker carries none), and failing that the segment's own endpoint,
+    since Escher and :mod:`escher_edit.build_map` both write these segments
+    as ``multimarker -> midmarker``.
+
+    This is what the notebook's version keyed on as well; it just added the
+    answer to offsets tuned to one figure's viewBox instead of using it.
+
+    Returns ``(x, y)``, or None when no rule leaves a single candidate.
+    """
+    marker_ends, other_ends = [], set()
+    for segment in reaction.find_all(class_="segment"):
+        d = segment.get("d", "")
+        points = [(round(x, 3), round(y, 3)) for x, y in _path_points(d)]
+        flat = (len(points) == 2 and "C" not in d and "undefined" not in d
+                and abs(points[1][0] - points[0][0]) <= max_length
+                and abs(points[1][1] - points[0][1]) <= max_rise)
+        if flat:
+            marker_ends += points
+        else:
+            other_ends.update(points)
+
+    shared = {point for point in marker_ends if marker_ends.count(point) > 1}
+    if len(shared) == 1:
+        return shared.pop()
+    untouched = set(marker_ends) - other_ends
+    if len(untouched) == 1:
+        return untouched.pop()
+    return marker_ends[1] if len(marker_ends) == 2 else None
+
+
+def draw_member_boxes(soup, style, largeEdgeLabels=None):
+    """Draw a labelled box on every reaction anchor.
+
+    Each community member is one reaction, and without this it is drawn as
+    nothing but the vertex where its edges meet, with its name floating above
+    them. The box makes it a node: a filled rectangle on the anchor (see
+    :func:`_reaction_anchor`), sized to its own label, with that label moved
+    inside it. Escher's JSON schema has no box node — marker circles and a
+    reaction label are all it can express — so, like the edge dashing, this
+    happens on the rendered SVG.
+
+    The box and the label go into a group appended last, so they sit above
+    the edges rather than being crossed by them, and the box hides the marker
+    circles it covers. That takes each label out of its ``<g class="reaction">``,
+    so this must run after everything that reaches a reaction's label through
+    that group — see :func:`EscherSVG_processing`.
+
+    ``largeEdgeLabels`` is the same list :func:`restyle_reaction_labels`
+    takes: the reactions outside it are drawn at a reduced font size, so
+    their boxes are sized to match rather than to the full one.
+
+    Returns the number of boxes drawn.
+    """
+    boxes = soup.new_tag("g")
+    boxes["id"] = "member-boxes"
+    edge_hex = style.member_box_edge_hex or style.rxn_label_hex
+
+    for reaction in soup.find_all(class_="reaction"):
+        anchor = _reaction_anchor(reaction)
+        if anchor is None:
+            continue
+        x, y = anchor
+        label_group = reaction.find(class_="reaction-label-group")
+        label = label_group.find("text") if label_group else None
+        name = label.get_text().strip() if label is not None else ""
+
+        font_px = style.rxn_label_px
+        if largeEdgeLabels is not None and reaction.get("id") not in largeEdgeLabels:
+            font_px /= 1.5   # the size restyle_reaction_labels fades them to
+        text_width = 0.6 * font_px * len(name)
+        height = font_px + 2 * style.member_box_pad
+        # a nameless reaction would otherwise get a sliver of a box
+        width = max(text_width + 2 * style.member_box_pad, height)
+        box = soup.new_tag("rect")
+        box["class"] = "member-box"
+        box["x"] = f"{x - width / 2:.3f}"
+        box["y"] = f"{y - height / 2:.3f}"
+        box["width"] = f"{width:.3f}"
+        box["height"] = f"{height:.3f}"
+        box["rx"] = str(style.member_box_radius)
+        box["fill"] = f"#{style.member_box_fill_hex}"
+        box["stroke"] = f"#{edge_hex}"
+        box["stroke-width"] = str(style.member_box_edge_px)
+        boxes.append(box)
+
+        if label_group is not None:
+            # Escher anchors label text on the left, on an alphabetic
+            # baseline, so centring it in the box is done by hand.
+            label_group["transform"] = (
+                f"translate({x - text_width / 2:.3f},"
+                f"{y + 0.35 * font_px:.3f})")
+            boxes.append(label_group)
+
+    drawn = boxes.find_all("rect")
+    if drawn:
+        soup.svg.append(boxes)
+    overlapping = _overlapping_boxes(drawn)
+    if overlapping:
+        log.warning("%d of %d member boxes overlap a neighbour — the "
+                    "reactions are closer together than a %gpx label needs; "
+                    "lower rxn_label_px or member_box_pad, or space the "
+                    "reactions further apart", overlapping, len(drawn),
+                    style.rxn_label_px)
+    log.info("drew %d member box(es)", len(drawn))
+    return len(drawn)
+
+
+def _overlapping_boxes(boxes):
+    """How many boxes run into another one — a label too big for the layout."""
+    rects = sorted((float(b["y"]), float(b["y"]) + float(b["height"]),
+                    float(b["x"]), float(b["x"]) + float(b["width"]))
+                   for b in boxes)
+    hit = set()
+    for index, (top, bottom, left, right) in enumerate(rects):
+        for other in rects[index + 1:]:
+            if other[0] >= bottom:
+                break
+            if other[2] < right and left < other[3]:
+                hit.add((top, left))
+                hit.add((other[0], other[2]))
+    return len(hit)
 
 
 def apply_color_highlights(soup, colorElements, largeEdgeLabels, style):
@@ -326,21 +453,24 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
                          abbrevIDs=None,
                          dashedEdges=None,
                          dash_pattern="8,5",
-                         mark_asv_nodes=True,
+                         member_boxes=True,
                          perNodeLabelSizes=None,
                          json_path=None):
     """Post-process a rendered Escher SVG.
 
     Drops specified label groups, rewrites fonts/colors for nodes, reactions,
     and segments, fades everything outside ``largeNodeLabels`` /
-    ``largeEdgeLabels``, draws small rectangles to mark short straight
-    segments as ASV anchor nodes, applies ``colorElements`` (a dict of
-    hex color -> [element ids]) to highlight specific segments/nodes/
-    reactions, and dashes the segments in ``dashedEdges`` with
-    ``dash_pattern`` (``"2,6"`` or similar gives dots).
+    ``largeEdgeLabels``, applies ``colorElements`` (a dict of hex color ->
+    [element ids]) to highlight specific segments/nodes/reactions, dashes the
+    segments in ``dashedEdges`` with ``dash_pattern`` (``"2,6"`` or similar
+    gives dots), and draws a labelled box on each reaction anchor.
 
-    ``mark_asv_nodes`` gates the ASV anchor rectangles, whose offsets only
-    make sense for the ABX map; turn it off for any other figure.
+    ``member_boxes`` gates those boxes (:func:`draw_member_boxes`), which are
+    what turns each community member from a bare vertex with a label floating
+    over the edges into a node. It runs last because it moves the reaction
+    labels into the boxes, out of the ``<g class="reaction">`` groups the
+    earlier steps look them up in. Turn it off for a map whose reactions are
+    not members.
 
     When ``perNodeLabelSizes`` is given (or ``json_path`` points to a map
     written by ``layout.set_node_label_sizes``), each listed node has its
@@ -365,10 +495,11 @@ def EscherSVG_processing(svg_path="metabolite_focused_map.svg",
     restyle_nodes(soup, style, largeNodeLabels, abbrevIDs,
                   perNodeLabelSizes=perNodeLabelSizes)
     restyle_segments(soup, style)
-    if mark_asv_nodes:
-        mark_asv_rectangles(soup, style)
     dash_segments(soup, dashedEdges, dash_pattern)
     apply_color_highlights(soup, colorElements, largeEdgeLabels, style)
+    # last: this moves the reaction labels out of their reaction groups
+    if member_boxes:
+        draw_member_boxes(soup, style, largeEdgeLabels)
 
     out_path = svg_path.with_name(svg_path.stem + "_edited" + svg_path.suffix)
     out_path.write_text(soup.prettify(), encoding="utf-8")

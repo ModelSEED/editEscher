@@ -11,7 +11,8 @@ Public surface:
         set_reaction_label_positions, remove_text_labels
     model_mapping.build_direction_tracking, categorize_segments_and_nodes
     reverse_reactions.reverse_reaction, reverse_reactions_in_map
-    svg_editor.EscherSVG_processing, EscherStyle, dash_segments
+    svg_editor.EscherSVG_processing, EscherStyle, dash_segments,
+        draw_member_boxes
 """
 from .build_map import (
     AVERAGE_CONDITION,
@@ -47,6 +48,7 @@ from .svg_editor import (
     EscherSVG_processing,
     EscherStyle,
     dash_segments,
+    draw_member_boxes,
     extract_per_node_label_sizes_from_json,
 )
 
@@ -66,5 +68,6 @@ __all__ = [
     "build_direction_tracking", "categorize_segments_and_nodes",
     "reverse_reaction", "reverse_reactions_in_map",
     "EscherSVG_processing", "EscherStyle", "dash_segments",
+    "draw_member_boxes",
     "extract_per_node_label_sizes_from_json",
 ]
