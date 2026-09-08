@@ -35,14 +35,21 @@ An exchange-lane node still sits at the mean height of the members it links,
 because reading cross-feeding level with the members doing it is the whole
 point of the lanes.
 
-Edges are drawn as S-curves: each Bezier handle sits at its own endpoint's
-height, so a segment leaves the marker and reaches the compound horizontally
-and does its climbing in between. Edges sharing a marker or a compound
-therefore bundle instead of fanning out as straight diagonals across the
-column, which is most of what makes a crowded block hard to read. Steep
-edges — the exchange lanes, where a compound can sit thousands of px away
-vertically but only a lane's width across — are blended back towards their
-chord so they do not collapse into coincident vertical runs.
+Edges are drawn as single arcs: one bend, no flat run at either end. The
+first Bezier handle stays level with the marker, so an edge leaves the member
+horizontally and the edges sharing a marker bundle instead of fanning out as
+straight diagonals; the second handle sits short of the compound's own
+height, which bends the arc once on its way there and leaves it running into
+the compound at an angle. ``MapStyle.arc_arrival`` sets how far short, and so
+how much the arc bows.
+
+Which face of a member an edge uses is fixed: what the member consumes
+arrives on the left of its node, what it excretes leaves on the right. A
+cross-fed compound is one shared node, though, so the members on the far
+side of it are reaching across, and their edges have to leave by their own
+face and come back. Those — and only those — are drawn with a longer first
+handle, swinging out of the face and round the node in one sweep. Every
+other edge on the map is the plain curve above.
 
 Blocks are tiled into a grid rather than stacked in one column, and a block
 that is still too tall gets its input and output columns pushed outwards, so
@@ -309,6 +316,19 @@ def build_member_reactions(fluxes_by_member, model_id="",
 # ------------------------------------------------------------- geometry
 
 
+def _single_bend_limit(bezier_fracs):
+    """The largest ``arc_arrival`` that still bends the edge only once.
+
+    An arc is one bend for as long as its control polygon keeps turning the
+    same way. With the handles at ``bezier_fracs`` along the run and the
+    first held level with the marker, that holds while the second has risen
+    less than this much of the way to the compound; past it the edge turns
+    back on itself near the compound and the arc becomes a shallow S.
+    """
+    f1, f2 = bezier_fracs
+    return (f2 - f1) / (1.0 - f1)
+
+
 def _label_width(text, font_px):
     """Rough on-map width of a label, in px.
 
@@ -372,24 +392,36 @@ class MapStyle:
 
     Edges
     -----
-    ``edge_curve`` picks the shape of the ``marker -> metabolite`` segments:
+    ``edge_curve`` picks the shape of the ``marker -> metabolite`` segments.
+    Both handles sit at ``bezier_fracs`` along the run; what differs is how
+    far each has risen towards the compound:
 
-    * ``"s"`` (the default) holds each Bezier handle at its own endpoint's
-      height, so an edge leaves the marker horizontally, climbs in the middle
-      of its run, and arrives at the compound horizontally. Edges that share
-      a marker or a compound bundle together instead of fanning across the
-      map as straight diagonals, and arriving horizontally puts them on the
-      node's inner side, clear of the outward-running labels.
+    * ``"arc"`` (the default) holds the first handle level with the marker
+      and stops the second ``arc_arrival`` of the way up, which bends the
+      edge exactly once — a single bow with no flat run at either end.
+      Leaving level means the edges sharing a marker still bundle rather than
+      fanning out as straight diagonals; stopping the second handle short is
+      what keeps the bend single, and lowering ``arc_arrival`` deepens the
+      bow. Above :func:`_single_bend_limit` the arc picks up a second bend
+      and stops being an arc, so that is the ceiling.
+    * ``"s"`` holds each handle at its own endpoint's height: the edge leaves
+      the marker horizontally, climbs in the middle, and arrives at the
+      compound horizontally — two bends. A steep edge has no room for that
+      turn, so ``curve_steepness`` is the ``|dx|/|dy|`` at which one still
+      gets the full curve; below it the handles blend back towards the chord,
+      which leaves the steep exchange-lane edges nearly straight.
     * ``"chord"`` puts both handles on the straight line between the
       endpoints, reproducing the flat edges of earlier maps.
 
-    A steep edge has no room to make that turn: the exchange lanes are only
-    a lane's width across but can span the whole member column vertically,
-    and a full S-curve there would leave several edges running vertically at
-    the same x, on top of each other. ``curve_steepness`` is the ``|dx|/|dy|``
-    at which an edge still gets the full curve; below it the handles are
-    blended back towards the chord, reaching the flat chord as the run goes
-    vertical. 0 turns the blending off and curves every edge fully.
+    Which face of the member node an edge uses is not a matter of style: a
+    consumed compound joins on the left, an excreted one leaves on the right,
+    whatever ``edge_curve`` says. Only an edge whose compound lies the other
+    way is drawn differently, and only in its first handle, which is swung
+    out of the required face far enough to carry the curve clear of the node
+    (see :func:`_hook`). ``member_node_pad`` is how much room the member's
+    label is given inside its box, and should match the ``member_box_pad``
+    given to ``svg_editor.draw_member_boxes``, because that box is the node
+    those edges have to clear.
 
     Aspect ratio
     ------------
@@ -425,13 +457,21 @@ class MapStyle:
                  span_columns=True, marker_offset=20.0,
                  member_label_gap=60.0, label_pad=22.0, label_font_px=20.0,
                  reaction_label_font_px=30.0, bezier_fracs=(0.25, 0.75),
-                 edge_curve="s", curve_steepness=0.5,
+                 edge_curve="arc", arc_arrival=0.6, curve_steepness=0.5,
+                 member_node_pad=12.0,
                  max_aspect=5.0, block_gap=900.0, block_column_gap=700.0,
                  block_label_gap=280.0, block_label_font_px=60.0,
                  canvas_margin=400.0):
-        if edge_curve not in ("s", "chord"):
+        if edge_curve not in ("arc", "s", "chord"):
             raise ValueError(
-                f"edge_curve must be 's' or 'chord', not {edge_curve!r}")
+                f"edge_curve must be 'arc', 's' or 'chord', not "
+                f"{edge_curve!r}")
+        limit = _single_bend_limit(bezier_fracs)
+        if not 0 < arc_arrival < limit:
+            raise ValueError(
+                f"arc_arrival must be between 0 and {limit:.3g} for "
+                f"bezier_fracs {bezier_fracs}: at or above that the arc picks "
+                f"up a second bend, which is the shape it exists to avoid")
         if max_aspect is not None and max_aspect <= 0:
             raise ValueError(f"max_aspect must be positive: {max_aspect!r}")
         if max_aspect is not None and max_aspect < 1:
@@ -455,13 +495,28 @@ class MapStyle:
         self.reaction_label_font_px = reaction_label_font_px
         self.bezier_fracs = bezier_fracs
         self.edge_curve = edge_curve
+        self.arc_arrival = arc_arrival
         self.curve_steepness = curve_steepness
+        self.member_node_pad = member_node_pad
         self.max_aspect = max_aspect
         self.block_gap = block_gap
         self.block_column_gap = block_column_gap
         self.block_label_gap = block_label_gap
         self.block_label_font_px = block_label_font_px
         self.canvas_margin = canvas_margin
+
+    def member_node_half(self, name):
+        """Half the width and height a member is drawn at, in px.
+
+        A member reaction is rendered as a labelled box by
+        ``svg_editor.draw_member_boxes``, so the layout has to know how much
+        room that box takes: its own label plus ``member_node_pad``, which
+        should match the ``member_box_pad`` the SVG step is given. Edges use
+        it to leave by the correct face of the box rather than crossing it.
+        """
+        return (_label_width(name, self.reaction_label_font_px) / 2
+                + self.member_node_pad,
+                self.reaction_label_font_px / 2 + self.member_node_pad)
 
     def fitted_lane_dx(self, column_height):
         """Offset for the exchange lanes given the tallest member column.
@@ -616,18 +671,107 @@ def _chord_blend(dx, dy, steepness):
     return max(0.0, 1.0 - abs(dx) / reach)
 
 
-def _bezier(ax, ay, bx, by, style):
+def _sign(value):
+    """-1, 0 or 1."""
+    return (value > 0) - (value < 0)
+
+
+def _cubic(p0, p1, p2, p3, t):
+    """The point at ``t`` on the cubic Bezier through those four."""
+    u = 1.0 - t
+    return (u * u * u * p0[0] + 3 * u * u * t * p1[0]
+            + 3 * u * t * t * p2[0] + t * t * t * p3[0],
+            u * u * u * p0[1] + 3 * u * u * t * p1[1]
+            + 3 * u * t * t * p2[1] + t * t * t * p3[1])
+
+
+def _leaves_by(p0, p1, p2, p3, node, side, steps=96):
+    """Does this curve cross the member node's edge on ``side`` and stay out?
+
+    The member is drawn as a box, so an edge obeys the in-on-the-left,
+    out-on-the-right rule by where it crosses that box's outline — not by
+    where its marker sits, which is buried inside the box either way.
+    """
+    cx, cy, half_w, half_h = node
+
+    def inside(point):
+        return abs(point[0] - cx) <= half_w and abs(point[1] - cy) <= half_h
+
+    out = False
+    for step in range(1, steps + 1):
+        point = _cubic(p0, p1, p2, p3, step / steps)
+        if not out:
+            if not inside(point):
+                if (point[0] - cx) * side < 0:
+                    return False        # left by the wrong face
+                out = True
+        elif inside(point):
+            return False                # came back in through the node
+    return out
+
+
+def _hook(p0, p3, handle2, side, node, f1, growth=(1, 2, 4, 8, 16, 32)):
+    """First handle for an edge whose compound is on the far side of its member.
+
+    A cross-fed compound is one shared node, so whichever lane it sits in,
+    the members on the other side of it are reaching across — and they still
+    have to leave by their own face: consumed on the left, excreted on the
+    right. Pointing the handle out of that face is not enough on its own,
+    because a cubic only travels about a third of the way towards its handle:
+    a compound level with the member would see the edge turn back through the
+    box it just left. So the hook is grown — out and towards the compound —
+    until the curve really does clear the node and stay clear.
+
+    Growing one handle keeps the edge a single curve. Bending it around the
+    node through waypoint markers would put the turn where it is wanted, but
+    the corner it makes there is tight enough to read as a kink; one long
+    sweep is both smoother and the same shape the rest of the map is drawn in.
+    """
+    (ax, ay), (bx, by) = p0, p3
+    _, _, half_w, half_h = node
+    reach = max(abs(bx - ax) * f1, 2 * half_w)
+    tilt = (_sign(by - ay) or 1) * 2 * half_h
+    for scale in growth:
+        handle = (ax + side * reach * scale, ay + tilt * scale)
+        if _leaves_by(p0, handle, handle2, p3, node, side):
+            return handle
+    log.warning("edge from (%.0f, %.0f) to (%.0f, %.0f) will not clear its "
+                "member node on the %s — drawn with the widest hook",
+                ax, ay, bx, by, "left" if side < 0 else "right")
+    return handle
+
+
+def _bezier(ax, ay, bx, by, style, exit_side=0, node=None):
     """Bezier handles for the segment from (ax, ay) to (bx, by).
 
-    ``style.bezier_fracs`` places both handles along the run in x; what they
-    do in y is what ``style.edge_curve`` decides — see :class:`MapStyle`.
+    ``style.bezier_fracs`` places both handles along the run in x; how far
+    each one has risen towards the compound is what ``style.edge_curve``
+    decides — see :class:`MapStyle`.
+
+    ``exit_side`` is the face of the member node this edge has to leave by:
+    -1 for a compound the member consumes, +1 for one it excretes. Together
+    with ``node`` — the member's ``(x, y, half width, half height)`` as it
+    will be drawn — it keeps consumption arriving on the left of the box and
+    excretion leaving on the right. Only a compound on the far side is drawn
+    any differently, and only in its first handle (see :func:`_hook`); every
+    other edge on the map is the plain curve it always was.
     """
     f1, f2 = style.bezier_fracs
     dx, dy = bx - ax, by - ay
-    blend = (1.0 if style.edge_curve == "chord"
-             else _chord_blend(dx, dy, style.curve_steepness))
-    return ({"x": ax + dx * f1, "y": ay + dy * f1 * blend},
-            {"x": ax + dx * f2, "y": by - dy * (1.0 - f2) * blend})
+    if style.edge_curve == "chord":
+        rise1, rise2 = f1, f2
+    elif style.edge_curve == "s":
+        blend = _chord_blend(dx, dy, style.curve_steepness)
+        rise1, rise2 = f1 * blend, 1.0 - (1.0 - f2) * blend
+    else:
+        rise1, rise2 = 0.0, style.arc_arrival
+    handle2 = (ax + dx * f2, ay + dy * rise2)
+    if exit_side and node and dx * exit_side < 0:
+        handle1 = _hook((ax, ay), (bx, by), handle2, exit_side, node, f1)
+    else:
+        handle1 = (ax + dx * f1, ay + dy * rise1)
+    return ({"x": handle1[0], "y": handle1[1]},
+            {"x": handle2[0], "y": handle2[1]})
 
 
 class _Counter:
@@ -846,6 +990,8 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
         nodes[product_marker] = {"node_type": "multimarker",
                                  "x": style.marker_offset, "y": cy}
 
+        half_width, half_height = style.member_node_half(member["name"])
+        node = (0.0, cy, half_width, half_height)
         segments = {
             segment_ids.next(): {"from_node_id": reactant_marker,
                                  "to_node_id": mid_id, "b1": None, "b2": None},
@@ -857,7 +1003,8 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             marker = reactant_marker if flux < 0 else product_marker
             target = nodes[compound_node[compound]]
             b1, b2 = _bezier(nodes[marker]["x"], cy,
-                             target["x"], target["y"], style)
+                             target["x"], target["y"], style,
+                             exit_side=_sign(flux), node=node)
             segments[segment_ids.next()] = {
                 "from_node_id": marker,
                 "to_node_id": compound_node[compound],
@@ -1363,10 +1510,17 @@ def main():
         help=f"Minimum vertical spacing between nodes in the exchange lanes "
              f"(default: {defaults.lane_node_spacing:g})")
     parser.add_argument(
-        "--edge-curve", choices=("s", "chord"), default=None,
-        help=f"'s' bends each edge out of its marker and into its compound "
-             f"horizontally so edges bundle instead of crossing; 'chord' "
-             f"draws them flat (default: {defaults.edge_curve})")
+        "--edge-curve", choices=("arc", "s", "chord"), default=None,
+        help=f"'arc' bends each edge once, level out of its marker and into "
+             f"its compound at an angle; 's' bends it twice, level at both "
+             f"ends; 'chord' draws it flat. None of them changes which face "
+             f"of a member an edge uses, nor the detour a compound on the far "
+             f"side needs (default: {defaults.edge_curve})")
+    parser.add_argument(
+        "--arc-arrival", type=float, default=None,
+        help=f"How far up to the compound the second handle of an arc sits: "
+             f"lower bows the arc more (default: {defaults.arc_arrival:g}, "
+             f"ceiling {_single_bend_limit(defaults.bezier_fracs):.3g})")
     parser.add_argument(
         "--max-aspect", type=float, default=None,
         help=f"Keep the canvas within this width:height ratio either way, by "
@@ -1396,6 +1550,7 @@ def main():
         "min_node_spacing": args.node_spacing,
         "lane_node_spacing": args.lane_spacing,
         "edge_curve": args.edge_curve,
+        "arc_arrival": args.arc_arrival,
         "max_aspect": args.max_aspect,
     }
     geometry = {name: value for name, value in geometry.items()

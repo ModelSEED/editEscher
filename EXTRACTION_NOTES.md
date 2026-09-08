@@ -93,20 +93,32 @@ doing it is the point of the lanes.
 
 ### Curved edges
 
-`marker -> metabolite` segments are drawn as S-curves (`MapStyle.edge_curve`,
-`"s"` by default): each Bezier handle keeps its own endpoint's height, so an
-edge leaves the marker and reaches the compound horizontally and climbs in
-between. Edges sharing a marker or a compound bundle instead of fanning out
-as straight diagonals, and arriving horizontally puts them on the node's
-inner side, clear of the outward-running labels. `edge_curve="chord"` puts
-both handles on the straight line between the endpoints, which is how the
-edges were drawn before.
+`marker -> metabolite` segments are drawn as single arcs (`MapStyle.
+edge_curve`, `"arc"` by default): one bend, no flat run at either end. The
+first Bezier handle stays level with the marker, so an edge leaves the member
+horizontally and the edges sharing a marker bundle rather than fanning out as
+straight diagonals; the second stops `arc_arrival` of the way up to the
+compound, which is what bends the arc once and sends it into the compound at
+an angle. Lower `arc_arrival` bows the arc more; above `_single_bend_limit`
+it picks up a second bend and is no longer an arc.
 
-A steep edge has no room to make that turn — the exchange lanes are only
-`mixed_lane_dx` across but can span the whole member column — so an edge is
-blended back towards its chord as `|dx| / |dy|` falls below
-`curve_steepness`; without that, several lane edges would run vertically at
-the same x and hide each other.
+`edge_curve="s"` is the earlier two-bend shape — level at both ends, with
+`curve_steepness` blending steep edges back towards their chord so lane edges
+do not collapse into coincident vertical runs. `edge_curve="chord"` puts both
+handles on the straight line between the endpoints, which is how the edges
+were drawn before either.
+
+### Which face an edge uses
+
+What a member consumes joins its node on the left; what it excretes leaves on
+the right. Because a cross-fed compound is one shared node, the members on
+the far side of it reach across, and their edges still have to leave by their
+own face — which means swinging out and coming back. Only those edges are
+drawn differently, and only in their first handle: it is pointed out of the
+required face and lengthened until the curve clears the member's box, so the
+edge stays one sweep in the same style as the rest of the map. Chaining
+segments through waypoint markers puts the turn where it is wanted but makes
+a corner tight enough to read as a kink, which is why it is one curve.
 
 ### Scaling with the community
 
