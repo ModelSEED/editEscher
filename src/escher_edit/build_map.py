@@ -35,21 +35,23 @@ An exchange-lane node still sits at the mean height of the members it links,
 because reading cross-feeding level with the members doing it is the whole
 point of the lanes.
 
-Edges are drawn as single arcs: one bend, no flat run at either end. The
-first Bezier handle stays level with the marker, so an edge leaves the member
-horizontally and the edges sharing a marker bundle instead of fanning out as
-straight diagonals; the second handle sits short of the compound's own
-height, which bends the arc once on its way there and leaves it running into
-the compound at an angle. ``MapStyle.arc_arrival`` sets how far short, and so
-how much the arc bows.
+Edges are drawn as circular arcs, so an edge turns at the same rate for its
+whole length rather than running straight and then bending. The arc wanted is
+the one that leaves the member horizontally, which bundles the edges sharing a
+marker instead of fanning them out as straight diagonals; an edge that climbs
+much more than it runs cannot have it, because that circle bows out well past
+the compound's own column and back. ``MapStyle.arc_bulge`` caps how far an arc
+may leave its chord, and a steeper edge is drawn as the shallower arc through
+the same two points — straightening towards its chord instead of kinking.
 
-Which face of a member an edge uses is fixed: what the member consumes
-arrives on the left of its node, what it excretes leaves on the right. A
-cross-fed compound is one shared node, though, so the members on the far
-side of it are reaching across, and their edges have to leave by their own
-face and come back. Those — and only those — are drawn with a longer first
-handle, swinging out of the face and round the node in one sweep. Every
-other edge on the map is the plain curve above.
+Which half of a member an edge uses is fixed: what the member consumes joins
+the left of its node, what it excretes leaves the right. A cross-fed compound
+is one shared node in a lane, so it can only be on one side, and the edge
+coming the other way still has to obey the rule — it leaves by the required
+face, turns back through 180 degrees and crosses to the compound. Its partner
+edge needs no turn, so the pair reads as one S through the shared node. The
+turn is grown only as large as it has to be to leave by the *face* rather
+than over a corner of the box, and to reverse without a hairpin.
 
 Blocks are tiled into a grid rather than stacked in one column, and a block
 that is still too tall gets its input and output columns pushed outwards, so
@@ -316,17 +318,54 @@ def build_member_reactions(fluxes_by_member, model_id="",
 # ------------------------------------------------------------- geometry
 
 
-def _single_bend_limit(bezier_fracs):
-    """The largest ``arc_arrival`` that still bends the edge only once.
+def _arc_handles(ax, ay, bx, by, bulge):
+    """Bezier handles for the circular arc from (ax, ay) to (bx, by).
 
-    An arc is one bend for as long as its control polygon keeps turning the
-    same way. With the handles at ``bezier_fracs`` along the run and the
-    first held level with the marker, that holds while the second has risen
-    less than this much of the way to the compound; past it the edge turns
-    back on itself near the compound and the arc becomes a shallow S.
+    Every member edge is an arc of a circle, so it turns at the same rate for
+    its whole length: no straight run that then bends, which is what a curve
+    reads as when its curvature is bunched into one part of it.
+
+    The arc wanted is the one leaving the member horizontally — that is what
+    bundles the edges sharing a marker instead of fanning them out as straight
+    diagonals, and it is the departure that keeps consumption on the left of
+    the member and excretion on the right. An edge that climbs much more than
+    it runs cannot have it: the circle through both ends that starts out level
+    has to bow out well past the compound's own column and come back, because
+    all of its turning has to happen in the narrow strip between them.
+
+    So the bow is capped. ``bulge`` is how far the arc may leave the straight
+    chord between its ends, as a fraction of the horizontal run; past that it
+    is still a circular arc through the same two points, but a shallower one,
+    which tilts its departure off level. Steep edges therefore straighten out
+    towards their chord rather than kinking, and at the default cap an arc
+    overshoots the column it is heading for by at most a few percent of its
+    own run. Shallow edges are under the cap already and keep the level
+    departure exactly.
+
+    A circular arc leaves each end at the same angle ``beta`` to its chord, so
+    ``beta`` is the whole shape: the sagitta is ``L/2 * tan(beta/2)``, which
+    inverts to give the capped arc, and the handles are the classic cubic
+    approximation ``4/3 * tan(beta/2) * R`` along the two end tangents.
     """
-    f1, f2 = bezier_fracs
-    return (f2 - f1) / (1.0 - f1)
+    dx, dy = bx - ax, by - ay
+    length = math.hypot(dx, dy)
+    if not length:
+        return (ax, ay), (bx, by)
+    # mirrored into a rightward run, so "level departure" is one angle
+    run = math.copysign(1.0, dx) if dx else 1.0
+    alpha = math.atan2(dy, abs(dx))
+    beta = alpha
+    limit = bulge * abs(dx)
+    if abs(length / 2.0 * math.tan(alpha / 2.0)) > limit:
+        beta = math.copysign(2.0 * math.atan(2.0 * limit / length), alpha)
+    if beta:
+        handle = 4.0 / 3.0 * math.tan(beta / 2.0) * length / (2.0 * math.sin(beta))
+    else:
+        handle = length / 3.0     # the straight-chord limit of the same thing
+    return ((ax + run * handle * math.cos(alpha - beta),
+             ay + handle * math.sin(alpha - beta)),
+            (bx - run * handle * math.cos(alpha + beta),
+             by - handle * math.sin(alpha + beta)))
 
 
 def _label_width(text, font_px):
@@ -392,18 +431,18 @@ class MapStyle:
 
     Edges
     -----
-    ``edge_curve`` picks the shape of the ``marker -> metabolite`` segments.
-    Both handles sit at ``bezier_fracs`` along the run; what differs is how
-    far each has risen towards the compound:
+    ``edge_curve`` picks the shape of the ``marker -> metabolite`` segments:
 
-    * ``"arc"`` (the default) holds the first handle level with the marker
-      and stops the second ``arc_arrival`` of the way up, which bends the
-      edge exactly once — a single bow with no flat run at either end.
-      Leaving level means the edges sharing a marker still bundle rather than
-      fanning out as straight diagonals; stopping the second handle short is
-      what keeps the bend single, and lowering ``arc_arrival`` deepens the
-      bow. Above :func:`_single_bend_limit` the arc picks up a second bend
-      and stops being an arc, so that is the ceiling.
+    * ``"arc"`` (the default) places the handles geometrically rather than
+      along the run, so the edge is a circular arc and turns at the same rate
+      for its whole length — no straight run that then bends. It is the arc
+      leaving the member level wherever that arc does not have to bow out
+      past the compound to get there; ``arc_bulge`` is the cap, in units of
+      the horizontal run, and a steeper edge gets the shallower arc through
+      the same two points instead (see :func:`_arc_handles`). Lowering
+      ``arc_bulge`` straightens edges towards their chord; 0 draws them flat.
+      ``bezier_fracs`` does not apply to it — the other two shapes place
+      their handles along the run, and use it.
     * ``"s"`` holds each handle at its own endpoint's height: the edge leaves
       the marker horizontally, climbs in the middle, and arrives at the
       compound horizontally — two bends. A steep edge has no room for that
@@ -413,15 +452,17 @@ class MapStyle:
     * ``"chord"`` puts both handles on the straight line between the
       endpoints, reproducing the flat edges of earlier maps.
 
-    Which face of the member node an edge uses is not a matter of style: a
+    Which half of the member node an edge uses is not a matter of style: a
     consumed compound joins on the left, an excreted one leaves on the right,
-    whatever ``edge_curve`` says. Only an edge whose compound lies the other
-    way is drawn differently, and only in its first handle, which is swung
-    out of the required face far enough to carry the curve clear of the node
-    (see :func:`_hook`). ``member_node_pad`` is how much room the member's
-    label is given inside its box, and should match the ``member_box_pad``
-    given to ``svg_editor.draw_member_boxes``, because that box is the node
-    those edges have to clear.
+    whatever ``edge_curve`` says. An edge whose compound is on the far side
+    is turned back through 180 degrees to obey it (:func:`_loop_handles`);
+    every other edge is the arc above.
+
+    ``member_node_pad`` and ``member_node_min_half`` describe the box a member
+    is drawn as, which those turns have to leave by the face of — see
+    :meth:`member_node_half`. They must match whatever finally draws the
+    member, or a turn fitted to the wrong box lands its arrowhead under a
+    corner of the real one.
 
     Aspect ratio
     ------------
@@ -455,10 +496,11 @@ class MapStyle:
                  min_node_spacing=90.0, lane_node_spacing=200.0,
                  lane_span_fraction=0.6,
                  span_columns=True, marker_offset=20.0,
-                 member_label_gap=60.0, label_pad=22.0, label_font_px=20.0,
+                 member_label_gap=60.0, label_pad=10.0, label_font_px=20.0,
+                 metabolite_radius=20.0,
                  reaction_label_font_px=30.0, bezier_fracs=(0.25, 0.75),
-                 edge_curve="arc", arc_arrival=0.6, curve_steepness=0.5,
-                 member_node_pad=12.0,
+                 edge_curve="arc", arc_bulge=0.4, curve_steepness=0.5,
+                 member_node_pad=12.0, member_node_min_half=(0.0, 0.0),
                  max_aspect=5.0, block_gap=900.0, block_column_gap=700.0,
                  block_label_gap=280.0, block_label_font_px=60.0,
                  canvas_margin=400.0):
@@ -466,12 +508,9 @@ class MapStyle:
             raise ValueError(
                 f"edge_curve must be 'arc', 's' or 'chord', not "
                 f"{edge_curve!r}")
-        limit = _single_bend_limit(bezier_fracs)
-        if not 0 < arc_arrival < limit:
+        if arc_bulge < 0:
             raise ValueError(
-                f"arc_arrival must be between 0 and {limit:.3g} for "
-                f"bezier_fracs {bezier_fracs}: at or above that the arc picks "
-                f"up a second bend, which is the shape it exists to avoid")
+                f"arc_bulge must not be negative: {arc_bulge!r}")
         if max_aspect is not None and max_aspect <= 0:
             raise ValueError(f"max_aspect must be positive: {max_aspect!r}")
         if max_aspect is not None and max_aspect < 1:
@@ -491,13 +530,15 @@ class MapStyle:
         self.marker_offset = marker_offset
         self.member_label_gap = member_label_gap
         self.label_pad = label_pad
+        self.metabolite_radius = metabolite_radius
         self.label_font_px = label_font_px
         self.reaction_label_font_px = reaction_label_font_px
         self.bezier_fracs = bezier_fracs
         self.edge_curve = edge_curve
-        self.arc_arrival = arc_arrival
-        self.curve_steepness = curve_steepness
+        self.arc_bulge = arc_bulge
         self.member_node_pad = member_node_pad
+        self.member_node_min_half = member_node_min_half
+        self.curve_steepness = curve_steepness
         self.max_aspect = max_aspect
         self.block_gap = block_gap
         self.block_column_gap = block_column_gap
@@ -505,18 +546,38 @@ class MapStyle:
         self.block_label_font_px = block_label_font_px
         self.canvas_margin = canvas_margin
 
+    def label_offset(self):
+        """Centre of a metabolite node to the near edge of its label, in px.
+
+        Escher anchors a node's label at ``label_x``, measured from the node's
+        centre, so an offset smaller than the node's own radius puts the text
+        on top of the circle. This clears the circle first and then leaves
+        ``label_pad`` of daylight, which is what stops a label touching the
+        node it belongs to. ``metabolite_radius`` is Escher's
+        ``primary_metabolite_radius`` (20 px unless the map is rendered with
+        that setting changed).
+        """
+        return self.metabolite_radius + self.label_pad
+
     def member_node_half(self, name):
         """Half the width and height a member is drawn at, in px.
 
-        A member reaction is rendered as a labelled box by
-        ``svg_editor.draw_member_boxes``, so the layout has to know how much
-        room that box takes: its own label plus ``member_node_pad``, which
-        should match the ``member_box_pad`` the SVG step is given. Edges use
-        it to leave by the correct face of the box rather than crossing it.
+        A member reaction is rendered as a labelled box — by
+        ``svg_editor.draw_member_boxes``, or by whatever draws the final
+        figure — and an edge that has to turn back through the correct face
+        has to clear that box, so the layout needs its size. It is the
+        member's own label plus ``member_node_pad``, which should match the
+        ``member_box_pad`` handed to the SVG step, but never smaller than
+        ``member_node_min_half``: a renderer that draws every member at a
+        fixed size (a small coloured rectangle with the label outside it, say)
+        is not sized by the label at all, and an edge fitted to the smaller
+        box would clear that one through its face and still be inside the box
+        actually drawn — leaving the arrowhead on its underside.
         """
-        return (_label_width(name, self.reaction_label_font_px) / 2
-                + self.member_node_pad,
-                self.reaction_label_font_px / 2 + self.member_node_pad)
+        return (max(_label_width(name, self.reaction_label_font_px) / 2
+                    + self.member_node_pad, self.member_node_min_half[0]),
+                max(self.reaction_label_font_px / 2 + self.member_node_pad,
+                    self.member_node_min_half[1]))
 
     def fitted_lane_dx(self, column_height):
         """Offset for the exchange lanes given the tallest member column.
@@ -544,7 +605,7 @@ class MapStyle:
                       for compound in compounds),
                      default=_label_width("x" * 8, self.label_font_px))
         lane_label_edge = ((self.mixed_lane_dx if lane_dx is None else lane_dx)
-                           + self.label_pad + widest)
+                           + self.label_offset() + widest)
         return lane_label_edge + self.column_clearance
 
     def column_positions(self, compounds, lane_dx=None):
@@ -671,11 +732,6 @@ def _chord_blend(dx, dy, steepness):
     return max(0.0, 1.0 - abs(dx) / reach)
 
 
-def _sign(value):
-    """-1, 0 or 1."""
-    return (value > 0) - (value < 0)
-
-
 def _cubic(p0, p1, p2, p3, t):
     """The point at ``t`` on the cubic Bezier through those four."""
     u = 1.0 - t
@@ -685,12 +741,44 @@ def _cubic(p0, p1, p2, p3, t):
             + 3 * u * t * t * p2[1] + t * t * t * p3[1])
 
 
-def _leaves_by(p0, p1, p2, p3, node, side, steps=96):
-    """Does this curve cross the member node's edge on ``side`` and stay out?
+def _min_turn_radius(p0, p1, p2, p3, steps=96):
+    """The tightest turn anywhere on the cubic, as a radius in px.
 
-    The member is drawn as a box, so an edge obeys the in-on-the-left,
-    out-on-the-right rule by where it crosses that box's outline — not by
-    where its marker sits, which is buried inside the box either way.
+    From the curvature itself, ``|v x a| / |v|^3``, rather than from the
+    circle through three sampled points: sampled points sit close together, so
+    their cross product is a difference of nearly equal numbers and loses most
+    of its significant digits exactly where the answer matters. A curve that
+    turns inside a radius of its own stroke width reads as a kink rather than
+    as a bend, which is the thing worth measuring.
+    """
+    ax, ay = 3.0 * (p1[0] - p0[0]), 3.0 * (p1[1] - p0[1])
+    bx, by = 3.0 * (p2[0] - p1[0]), 3.0 * (p2[1] - p1[1])
+    cx, cy = 3.0 * (p3[0] - p2[0]), 3.0 * (p3[1] - p2[1])
+    tightest = float("inf")
+    for step in range(steps + 1):
+        t = step / steps
+        u = 1.0 - t
+        # first and second derivatives of the cubic at t
+        vx = u * u * ax + 2.0 * u * t * bx + t * t * cx
+        vy = u * u * ay + 2.0 * u * t * by + t * t * cy
+        wx = 2.0 * (u * (bx - ax) + t * (cx - bx))
+        wy = 2.0 * (u * (by - ay) + t * (cy - by))
+        turn = abs(vx * wy - vy * wx)
+        speed = math.hypot(vx, vy)
+        if turn <= 0.0 or speed <= 0.0:
+            continue                    # straight or stationary here
+        tightest = min(tightest, speed ** 3 / turn)
+    return tightest
+
+
+def _leaves_by_face(p0, p1, p2, p3, node, side, steps=96):
+    """Does the curve cross the member's left or right face, and stay out?
+
+    Not merely the correct half: an edge that climbs out through the top of
+    the box a little to the right of centre satisfies "the right half" and
+    still reads as an arrowhead on the underside rather than on the face.
+    What makes the rule legible is the face the edge crosses, so that is what
+    is asked for here.
     """
     cx, cy, half_w, half_h = node
 
@@ -702,74 +790,104 @@ def _leaves_by(p0, p1, p2, p3, node, side, steps=96):
         point = _cubic(p0, p1, p2, p3, step / steps)
         if not out:
             if not inside(point):
-                if (point[0] - cx) * side < 0:
-                    return False        # left by the wrong face
+                # the first step outside must be past the face, not past the
+                # top or bottom edge, and on the side the direction asks for
+                if (point[0] - cx) * side < half_w - 1e-9:
+                    return False
                 out = True
         elif inside(point):
             return False                # came back in through the node
     return out
 
 
-def _hook(p0, p3, handle2, side, node, f1, growth=(1, 2, 4, 8, 16, 32)):
-    """First handle for an edge whose compound is on the far side of its member.
+# A turn is grown until it turns nowhere tighter than this share of the run it
+# has to cover, with a floor for the very short ones. It scales with the edge
+# rather than being an absolute px figure because what reads as a spike is
+# relative: a 40 px radius is invisible on a map 8000 px wide and a sharp point
+# on one a third of that. The first size that clears is taken, so a turn stays
+# as small as the geometry lets it.
+_LOOP_MIN_RADIUS_FRACTION = 0.30
+_LOOP_MIN_RADIUS_FLOOR = 40.0
 
-    A cross-fed compound is one shared node, so whichever lane it sits in,
-    the members on the other side of it are reaching across — and they still
-    have to leave by their own face: consumed on the left, excreted on the
-    right. Pointing the handle out of that face is not enough on its own,
-    because a cubic only travels about a third of the way towards its handle:
-    a compound level with the member would see the edge turn back through the
-    box it just left. So the hook is grown — out and towards the compound —
-    until the curve really does clear the node and stay clear.
 
-    Growing one handle keeps the edge a single curve. Bending it around the
-    node through waypoint markers would put the turn where it is wanted, but
-    the corner it makes there is tight enough to read as a kink; one long
-    sweep is both smoother and the same shape the rest of the map is drawn in.
+def _loop_min_radius(run):
+    """How round a turn-back over this horizontal run has to be, in px."""
+    return max(_LOOP_MIN_RADIUS_FLOOR, _LOOP_MIN_RADIUS_FRACTION * run)
+
+
+def _loop_handles(p0, p3, side, node,
+                  swing=(0.0, 0.35, 0.75, 1.3, 2.1, 3.2, 4.8, 7.0, 10.0),
+                  clear=(0.0, 0.3, 0.7, 1.2)):
+    """Handles for the 180-degree turn onto a compound on the far side.
+
+    A cross-fed compound is one shared node, so it lies on one side of the
+    member column and one of its two edges is coming the other way. That edge
+    still has to obey the rule — excretion leaves the right of its member,
+    consumption joins the left — so it leaves by the required face, turns
+    through 180 degrees and comes back across. Its partner edge needs no turn,
+    and the two together read as one S through the shared node.
+
+    The first handle is horizontal, which is what carries the curve out
+    through the face rather than over a corner of the box; the second reverses
+    it and may swing clear of the box to keep the turn round. Both are grown
+    together, smallest first, and the first pair that leaves by the face,
+    stays out, and turns nowhere tighter than :func:`_loop_min_radius` is
+    taken — so the loop is only as large as it has to be.
     """
     (ax, ay), (bx, by) = p0, p3
-    _, _, half_w, half_h = node
-    reach = max(abs(bx - ax) * f1, 2 * half_w)
-    tilt = (_sign(by - ay) or 1) * 2 * half_h
-    for scale in growth:
-        handle = (ax + side * reach * scale, ay + tilt * scale)
-        if _leaves_by(p0, handle, handle2, p3, node, side):
-            return handle
-    log.warning("edge from (%.0f, %.0f) to (%.0f, %.0f) will not clear its "
-                "member node on the %s — drawn with the widest hook",
-                ax, ay, bx, by, "left" if side < 0 else "right")
-    return handle
+    half_w = node[2]
+    run = abs(bx - ax) or 1.0
+    around = -1.0 if by > ay else 1.0    # turn on the side the compound is on
+    best = None
+    for size in swing:
+        handle1 = (ax + side * (half_w + 20.0) * (1.0 + 2.0 * size), ay)
+        for spread in clear:
+            handle2 = (bx + side * run * (0.5 + size), by - around * run * spread)
+            if not _leaves_by_face(p0, handle1, handle2, p3, node, side):
+                continue
+            radius = _min_turn_radius(p0, handle1, handle2, p3)
+            if radius >= _loop_min_radius(run):
+                return handle1, handle2
+            if best is None or radius > best[0]:
+                best = (radius, handle1, handle2)
+    if best is None:
+        log.warning("edge from (%.0f, %.0f) to (%.0f, %.0f) cannot turn back "
+                    "through the %s face of its member — drawn as a plain arc",
+                    ax, ay, bx, by, "left" if side < 0 else "right")
+        return None
+    return best[1], best[2]
 
 
 def _bezier(ax, ay, bx, by, style, exit_side=0, node=None):
     """Bezier handles for the segment from (ax, ay) to (bx, by).
 
-    ``style.bezier_fracs`` places both handles along the run in x; how far
-    each one has risen towards the compound is what ``style.edge_curve``
-    decides — see :class:`MapStyle`.
+    ``style.edge_curve`` decides the shape — see :class:`MapStyle`. The
+    default arc places its handles geometrically (:func:`_arc_handles`); the
+    other two put them at ``style.bezier_fracs`` along the run and differ in
+    how far each has risen towards the compound.
 
-    ``exit_side`` is the face of the member node this edge has to leave by:
-    -1 for a compound the member consumes, +1 for one it excretes. Together
-    with ``node`` — the member's ``(x, y, half width, half height)`` as it
-    will be drawn — it keeps consumption arriving on the left of the box and
-    excretion leaving on the right. Only a compound on the far side is drawn
-    any differently, and only in its first handle (see :func:`_hook`); every
-    other edge on the map is the plain curve it always was.
+    ``exit_side`` is the half of the member this edge has to use: -1 for a
+    compound the member consumes, +1 for one it excretes. With ``node`` — the
+    member's ``(x, y, half width, half height)`` as it will be drawn — an edge
+    whose compound is on the far side is turned back through 180 degrees so it
+    still leaves by that half (:func:`_loop_handles`). Every other edge is the
+    plain arc.
     """
     f1, f2 = style.bezier_fracs
     dx, dy = bx - ax, by - ay
     if style.edge_curve == "chord":
-        rise1, rise2 = f1, f2
+        handle1 = (ax + dx * f1, ay + dy * f1)
+        handle2 = (ax + dx * f2, ay + dy * f2)
     elif style.edge_curve == "s":
         blend = _chord_blend(dx, dy, style.curve_steepness)
-        rise1, rise2 = f1 * blend, 1.0 - (1.0 - f2) * blend
+        handle1 = (ax + dx * f1, ay + dy * f1 * blend)
+        handle2 = (ax + dx * f2, ay + dy * (1.0 - (1.0 - f2) * blend))
     else:
-        rise1, rise2 = 0.0, style.arc_arrival
-    handle2 = (ax + dx * f2, ay + dy * rise2)
+        handle1, handle2 = _arc_handles(ax, ay, bx, by, style.arc_bulge)
     if exit_side and node and dx * exit_side < 0:
-        handle1 = _hook((ax, ay), (bx, by), handle2, exit_side, node, f1)
-    else:
-        handle1 = (ax + dx * f1, ay + dy * rise1)
+        looped = _loop_handles((ax, ay), (bx, by), exit_side, node)
+        if looped:
+            handle1, handle2 = looped
     return ({"x": handle1[0], "y": handle1[1]},
             {"x": handle2[0], "y": handle2[1]})
 
@@ -924,6 +1042,15 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
     # so the majority side is the one whose edges avoid crossing the column.
     # A tie carries no such preference, so it goes to the emptier lane; that
     # keeps the two lanes balanced instead of piling everything on the left.
+    #
+    # The majority is all the lane can do. The rule says a compound sits
+    # right of every member that makes it and left of every member that eats
+    # it, so each cross-feeding edge orders its two members along x, and a
+    # consistent set of orderings exists only if the cross-feeding graph has
+    # no cycle. Two members that feed each other are a cycle, so whichever
+    # lane a shared compound goes in, some of its edges approach from the
+    # wrong side. Those are the ones _loop_handles turns back through 180
+    # degrees; putting them in the minority keeps the number of turns down.
     left_lane, right_lane = [], []
     for compound in exchanged:
         consumers = sum(1 for m in members if m["fluxes"].get(compound, 0) < 0)
@@ -960,11 +1087,12 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             # Escher renders bigg_id as the on-map label (``name`` is only
             # tooltip metadata), so labels left of the axis are shifted by the
             # width of the compound ID.
+            offset = style.label_offset()
             if x < 0:
-                label_x = x - style.label_pad - _label_width(
+                label_x = x - offset - _label_width(
                     compound, style.label_font_px)
             else:
-                label_x = x + style.label_pad
+                label_x = x + offset
             node_id = node_ids.next()
             compound_node[compound] = node_id
             nodes[node_id] = {
@@ -1004,7 +1132,7 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             target = nodes[compound_node[compound]]
             b1, b2 = _bezier(nodes[marker]["x"], cy,
                              target["x"], target["y"], style,
-                             exit_side=_sign(flux), node=node)
+                             exit_side=(1 if flux > 0 else -1), node=node)
             segments[segment_ids.next()] = {
                 "from_node_id": marker,
                 "to_node_id": compound_node[compound],
@@ -1517,10 +1645,12 @@ def main():
              f"of a member an edge uses, nor the detour a compound on the far "
              f"side needs (default: {defaults.edge_curve})")
     parser.add_argument(
-        "--arc-arrival", type=float, default=None,
-        help=f"How far up to the compound the second handle of an arc sits: "
-             f"lower bows the arc more (default: {defaults.arc_arrival:g}, "
-             f"ceiling {_single_bend_limit(defaults.bezier_fracs):.3g})")
+        "--arc-bulge", type=float, default=None,
+        help=f"How far an arc may bow away from the straight line between its "
+             f"ends, as a fraction of its horizontal run: steeper edges are "
+             f"drawn as the shallower arc through the same points rather than "
+             f"swinging past their own column, and 0 draws every edge flat "
+             f"(default: {defaults.arc_bulge:g})")
     parser.add_argument(
         "--max-aspect", type=float, default=None,
         help=f"Keep the canvas within this width:height ratio either way, by "
@@ -1550,7 +1680,7 @@ def main():
         "min_node_spacing": args.node_spacing,
         "lane_node_spacing": args.lane_spacing,
         "edge_curve": args.edge_curve,
-        "arc_arrival": args.arc_arrival,
+        "arc_bulge": args.arc_bulge,
         "max_aspect": args.max_aspect,
     }
     geometry = {name: value for name, value in geometry.items()

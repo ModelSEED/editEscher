@@ -93,14 +93,31 @@ doing it is the point of the lanes.
 
 ### Curved edges
 
-`marker -> metabolite` segments are drawn as single arcs (`MapStyle.
-edge_curve`, `"arc"` by default): one bend, no flat run at either end. The
-first Bezier handle stays level with the marker, so an edge leaves the member
-horizontally and the edges sharing a marker bundle rather than fanning out as
-straight diagonals; the second stops `arc_arrival` of the way up to the
-compound, which is what bends the arc once and sends it into the compound at
-an angle. Lower `arc_arrival` bows the arc more; above `_single_bend_limit`
-it picks up a second bend and is no longer an arc.
+`marker -> metabolite` segments are drawn as circular arcs (`MapStyle.
+edge_curve`, `"arc"` by default): the handles are placed geometrically rather
+than at a fraction of the run, so an edge turns at the same rate for its whole
+length instead of running straight and then bending. The arc wanted is the
+circle tangent to the horizontal at the marker that passes through the
+compound — leaving level is what makes the edges sharing a marker bundle
+rather than fan out as straight diagonals.
+
+An edge that climbs much more than it runs cannot have that arc: all of its
+turning has to happen in the narrow strip between the member and the lane, so
+the circle bows out well past the compound's own column and comes back. So the
+bow is capped. `arc_bulge` is how far an arc may leave the straight chord
+between its ends, as a fraction of the horizontal run; past it the edge is
+still a circular arc through the same two points, but a shallower one, which
+tilts its departure off level. Steep edges straighten towards their chord
+rather than kinking, and at the default cap an arc overshoots the column it is
+heading for by at most a few percent of its own run. Lowering `arc_bulge`
+flattens everything; 0 draws straight chords.
+
+Keeping the second handle off the compound in the shallow case is not only
+cosmetic: Escher's `displacedCoords` pulls a segment's endpoint back from the
+node along the `b2 -> end` direction and rotates the arrowhead by it, so a
+handle sitting on the node's own centre line gives a vertical arrow on a
+level edge, and one closer than the displacement makes the curve overshoot
+into a cusp.
 
 `edge_curve="s"` is the earlier two-bend shape — level at both ends, with
 `curve_steepness` blending steep edges back towards their chord so lane edges
@@ -110,15 +127,34 @@ were drawn before either.
 
 ### Which face an edge uses
 
-What a member consumes joins its node on the left; what it excretes leaves on
-the right. Because a cross-fed compound is one shared node, the members on
-the far side of it reach across, and their edges still have to leave by their
-own face — which means swinging out and coming back. Only those edges are
-drawn differently, and only in their first handle: it is pointed out of the
-required face and lengthened until the curve clears the member's box, so the
-edge stays one sweep in the same style as the rest of the map. Chaining
-segments through waypoint markers puts the turn where it is wanted but makes
-a corner tight enough to read as a kink, which is why it is one curve.
+What a member consumes joins its node on the left half; what it excretes
+leaves on the right half. For most edges the layout is what enforces it: the
+compound is simply drawn on the side its direction asks for, and the plain arc
+above joins it.
+
+A cross-fed compound is one shared node in a lane, so it can only be on one
+side, and the edges approaching from the other side cannot be satisfied by
+placement. The rule says a compound sits right of every member that produces
+it and left of every member that consumes it, so every cross-feeding edge
+orders its two members along x, and a consistent set of orderings exists only
+if the cross-feeding graph is acyclic — two members that feed each other are a
+cycle. The lane rule puts the compound where the fewest edges are stranded,
+and `_loop_handles` turns each stranded edge back through 180 degrees: out by
+the required face, round, and across to the compound. Its partner edge needs
+no turn, so the two together read as one S through the shared node.
+
+The turn is grown smallest-first and accepted as soon as it leaves by the
+*face* — not merely on the correct half, which an edge climbing over a corner
+also satisfies while putting its arrowhead under the box — and turns nowhere
+tighter than `_LOOP_MIN_RADIUS` (40 px against a 10 px stroke). The box it has
+to clear comes from `MapStyle.member_node_half`, so `member_node_pad` and
+`member_node_min_half` must describe whatever finally draws the member: fit a
+turn to a smaller box than the one drawn and the arrowhead lands under its
+corner, which is exactly how the previous attempt failed.
+
+The alternative is drawing the compound once in each lane, which satisfies the
+rule with no turns at all but puts the same compound on the map twice and
+breaks the visible producer -> node -> consumer link.
 
 ### Scaling with the community
 
