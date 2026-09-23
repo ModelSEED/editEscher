@@ -24,6 +24,7 @@ escher-edit-filter = "escher_edit.filter_map:main"
 escher-edit-clean = "escher_edit.clean_json:main"
 escher-edit-map = "escher_edit.model_mapping:main"
 escher-edit-svg = "escher_edit.svg_editor:main"
+escher-edit-render = "escher_edit.render:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/escher_edit"]

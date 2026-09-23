@@ -100,9 +100,9 @@ ESCHER_SCHEMA = "https://escher.github.io/escher/jsonschema/1-0-0#"
 #: cannot parse a map built from it.
 AVERAGE_CONDITION = "ave"
 
-#: Radii Escher renders nodes at, used to keep a node's own circle inside the
-#: canvas when the block extents are measured.
-NODE_RADIUS = 20.0
+#: Radius Escher renders marker nodes at, used to keep a node's own circle
+#: inside the canvas when the block extents are measured (metabolite radii are
+#: in the style).
 MARKER_RADIUS = 5.0
 
 #: How many times :func:`build_escher_map` may re-lay a map out while fitting
@@ -390,18 +390,28 @@ class MapStyle:
     * **outputs** — produced but never consumed — in a right column at
       ``output_column_dx``;
     * **exchanged** — consumed by one member and produced by another — in two
-      lanes flanking the member column, level with the members that consume
-      and produce them.
+      lanes, secondary columns between the member column and the input and
+      output columns, level with the members that consume and produce them.
 
-    ``mixed_lane_dx`` is a floor, not the offset: a lane is only as slanted
-    as its width lets it be, so a lane that keeps 240 px while the member
-    column grows to twenty thousand ends up with every one of its edges
-    running vertically on top of the others. The offset therefore scales with
-    the tallest member column in the map — ``lane_dx_fraction`` of it — which
-    keeps the lane edges as separable in a forty-member community as in a
-    five-member one (see :meth:`fitted_lane_dx`). Set ``lane_dx_fraction`` to
-    0 to stop the lanes growing with the column; the aspect fit below may
-    still move them.
+    The map's width scales with the tallest member column in it: an edge is
+    only as slanted as the room it crosses, so a map that keeps 240 px while
+    the member column grows to twenty thousand has every edge running
+    vertically on top of the others. The input and output columns are
+    fitted ``lane_dx_fraction`` of that height out (``mixed_lane_dx`` is the
+    floor for the small communities that do not need the room), plus the room
+    the lane labels take (see :meth:`fitted_lane_dx` and
+    :meth:`fitted_column_dx`). Set ``lane_dx_fraction`` to 0 to stop the map
+    widening with the column; the aspect fit below may still widen it.
+
+    The lanes then sit ``lane_position`` of the way from the member column
+    out to the input and output columns — halfway by default — so they read
+    as a column of their own rather than as a second row of the outer
+    columns, which is what a fixed label gap inside those columns made them
+    as the map widened. Their labels still have to fit between them and the
+    outer columns, so where the columns are only just far enough out for
+    that — a small community, or large labels — the lanes stay at the
+    closest the labels allow (see :meth:`lane_offset`). 1 puts them there
+    always; 0 pulls them in to ``mixed_lane_dx``.
 
     Members are ordered by connectivity — the ones exchanging the most
     compounds in the middle of the column, the quietest at its two ends — and
@@ -464,6 +474,15 @@ class MapStyle:
     member, or a turn fitted to the wrong box lands its arrowhead under a
     corner of the real one.
 
+    Labels
+    ------
+    ``label_font_px``, ``reaction_label_font_px`` and ``block_label_font_px``
+    are the sizes room is reserved for — label widths set how far apart the
+    columns sit, and the member label sets its box. They track
+    ``svg_editor.EscherStyle``'s ``rxn_label_px`` (which draws the member
+    box) and ``node_label_px``; enlarge the drawn labels and these have to
+    grow with them, or the larger text runs into its neighbours.
+
     Aspect ratio
     ------------
     ``max_aspect`` bounds the shape of the exported canvas: the figure is
@@ -494,15 +513,15 @@ class MapStyle:
                  output_column_dx=None, mixed_lane_dx=240.0,
                  lane_dx_fraction=0.08, column_clearance=160.0,
                  min_node_spacing=90.0, lane_node_spacing=200.0,
-                 lane_span_fraction=0.6,
+                 lane_span_fraction=0.6, lane_position=0.5,
                  span_columns=True, marker_offset=20.0,
-                 member_label_gap=60.0, label_pad=10.0, label_font_px=20.0,
-                 metabolite_radius=20.0,
-                 reaction_label_font_px=30.0, bezier_fracs=(0.25, 0.75),
+                 member_label_gap=60.0, label_pad=None, label_font_px=19.6,
+                 metabolite_radius=78.0, crossfed_radius=60.0,
+                 reaction_label_font_px=29.4, bezier_fracs=(0.25, 0.75),
                  edge_curve="arc", arc_bulge=0.4, curve_steepness=0.5,
                  member_node_pad=12.0, member_node_min_half=(0.0, 0.0),
                  max_aspect=5.0, block_gap=900.0, block_column_gap=700.0,
-                 block_label_gap=280.0, block_label_font_px=60.0,
+                 block_label_gap=280.0, block_label_font_px=84.0,
                  canvas_margin=400.0):
         if edge_curve not in ("arc", "s", "chord"):
             raise ValueError(
@@ -511,6 +530,9 @@ class MapStyle:
         if arc_bulge < 0:
             raise ValueError(
                 f"arc_bulge must not be negative: {arc_bulge!r}")
+        if not 0 <= lane_position <= 1:
+            raise ValueError(
+                f"lane_position must be between 0 and 1: {lane_position!r}")
         if max_aspect is not None and max_aspect <= 0:
             raise ValueError(f"max_aspect must be positive: {max_aspect!r}")
         if max_aspect is not None and max_aspect < 1:
@@ -527,10 +549,14 @@ class MapStyle:
         self.min_node_spacing = min_node_spacing
         self.lane_node_spacing = lane_node_spacing
         self.lane_span_fraction = lane_span_fraction
+        self.lane_position = lane_position
         self.marker_offset = marker_offset
         self.member_label_gap = member_label_gap
-        self.label_pad = label_pad
+        # the daylight between a node and its label reads relative to the
+        # text, so by default it grows with the label size
+        self.label_pad = 0.5 * label_font_px if label_pad is None else label_pad
         self.metabolite_radius = metabolite_radius
+        self.crossfed_radius = crossfed_radius
         self.label_font_px = label_font_px
         self.reaction_label_font_px = reaction_label_font_px
         self.bezier_fracs = bezier_fracs
@@ -546,18 +572,35 @@ class MapStyle:
         self.block_label_font_px = block_label_font_px
         self.canvas_margin = canvas_margin
 
-    def label_offset(self):
+    def node_radius(self, primary=True):
+        """Radius a metabolite node is drawn at, in px.
+
+        The compounds only consumed or only produced are drawn at
+        ``metabolite_radius`` and the cross-fed ones in the lanes at the
+        smaller ``crossfed_radius``. The builder marks the two apart with
+        Escher's own ``node_is_primary`` flag — True for the first, False for
+        the second — so Escher's viewer, which sizes nodes by that flag, draws
+        the same distinction at its own two radii.
+        """
+        return self.metabolite_radius if primary else self.crossfed_radius
+
+    def node_spacing(self, spacing, primary=True):
+        """``spacing``, raised if need be so neighbouring nodes in a column
+        keep ``2 * label_pad`` of daylight between their circles."""
+        return max(spacing, 2 * self.node_radius(primary) + 2 * self.label_pad)
+
+    def label_offset(self, primary=True):
         """Centre of a metabolite node to the near edge of its label, in px.
 
         Escher anchors a node's label at ``label_x``, measured from the node's
         centre, so an offset smaller than the node's own radius puts the text
         on top of the circle. This clears the circle first and then leaves
-        ``label_pad`` of daylight, which is what stops a label touching the
-        node it belongs to. ``metabolite_radius`` is Escher's
-        ``primary_metabolite_radius`` (20 px unless the map is rendered with
-        that setting changed).
+        ``label_pad`` of daylight (half the label size unless set), which is
+        what stops a label touching the node it belongs to. The radius is the
+        node's own (:meth:`node_radius`); a map opened in Escher's viewer,
+        which draws nodes at its own radii, keeps these offsets.
         """
-        return self.metabolite_radius + self.label_pad
+        return self.node_radius(primary) + self.label_pad
 
     def member_node_half(self, name):
         """Half the width and height a member is drawn at, in px.
@@ -580,18 +623,35 @@ class MapStyle:
                     self.member_node_min_half[1]))
 
     def fitted_lane_dx(self, column_height):
-        """Offset for the exchange lanes given the tallest member column.
+        """The offset the outer columns are fitted beyond, given the tallest
+        member column — the furthest out the lanes can go.
 
         A lane edge crosses ``lane_dx`` horizontally however far it climbs, so
         the taller the member column the steeper — and the more overplotted —
         every edge in the lane becomes. Scaling the offset with the column
         keeps their slant, and so their separation, roughly constant as the
         community grows; ``mixed_lane_dx`` is the floor for the small
-        communities that do not need the room.
+        communities that do not need the room. The outer columns go beyond
+        this by the lane labels' room, and :meth:`lane_offset` then settles the
+        lanes ``lane_position`` of the way out to them.
         """
         if not self.lane_dx_fraction:
             return self.mixed_lane_dx
         return max(self.mixed_lane_dx, self.lane_dx_fraction * column_height)
+
+    def lane_offset(self, columns, compounds):
+        """Where the exchange lanes go once the outer columns are placed.
+
+        ``lane_position`` of the way from the member column out to the nearer
+        of the two outer columns, but never so far out that the lane labels —
+        which run outwards from the lane — would reach that column
+        (:meth:`fitted_column_dx` is how much room they take), and never in
+        past ``mixed_lane_dx``.
+        """
+        inner = min(-columns[0], columns[1])
+        label_room = self.fitted_column_dx(compounds, lane_dx=0.0)
+        return max(self.mixed_lane_dx,
+                   min(self.lane_position * inner, inner - label_room))
 
     def fitted_column_dx(self, compounds, lane_dx=None):
         """Tightest offset for the input/output columns, in px.
@@ -605,7 +665,7 @@ class MapStyle:
                       for compound in compounds),
                      default=_label_width("x" * 8, self.label_font_px))
         lane_label_edge = ((self.mixed_lane_dx if lane_dx is None else lane_dx)
-                           + self.label_offset() + widest)
+                           + self.label_offset(primary=False) + widest)
         return lane_label_edge + self.column_clearance
 
     def column_positions(self, compounds, lane_dx=None):
@@ -650,6 +710,43 @@ def classify_compounds(members):
                 produced.add(compound)
     return (sorted(consumed - produced), sorted(produced - consumed),
             sorted(consumed & produced))
+
+
+def member_box_rects(escher_map, prefix="r"):
+    """``{reaction id: (x, y, width, height)}`` — the box each member is drawn as.
+
+    The builder records on every member reaction the box its edges were laid
+    out around (``reaction["member_box"]``, sized by
+    :meth:`MapStyle.member_node_half`): an edge that turns back to leave by
+    the correct face clears exactly that box, so a renderer that draws any
+    other size can land an arrowhead under a corner of it. Where
+    ``member_node_min_half`` set it, the recorded box is whatever that
+    renderer asked for — its own box plus any clearance it holds around it —
+    not necessarily the rectangle it draws.
+
+    Only the size is stored, and the box is centred on the reaction's
+    midmarker wherever that node now sits, so moving a member moves its box
+    with it. ``x`` and ``y`` are the top-left corner, as in an SVG ``<rect>``.
+
+    Ids come back ``r``-prefixed to match the reaction groups in a rendered
+    SVG; pass ``prefix=""`` for the JSON keys. Reactions without the field —
+    maps built before it existed, or re-saved from Escher's editor, which
+    keeps only the keys it knows — are left out.
+    """
+    nodes = escher_map[1]["nodes"]
+    rects = {}
+    for key, reaction in escher_map[1]["reactions"].items():
+        box = reaction.get("member_box")
+        mid = next((nodes[node_id] for segment in reaction["segments"].values()
+                    for node_id in (segment["from_node_id"], segment["to_node_id"])
+                    if nodes.get(node_id, {}).get("node_type") == "midmarker"),
+                   None)
+        if not box or mid is None:
+            continue
+        rects[f"{prefix}{key}"] = (mid["x"] - box["width"] / 2,
+                                   mid["y"] - box["height"] / 2,
+                                   box["width"], box["height"])
+    return rects
 
 
 def cross_feeding_segments(escher_map, prefix="s"):
@@ -839,17 +936,30 @@ def _loop_handles(p0, p3, side, node,
     run = abs(bx - ax) or 1.0
     around = -1.0 if by > ay else 1.0    # turn on the side the compound is on
     best = None
-    for size in swing:
-        handle1 = (ax + side * (half_w + 20.0) * (1.0 + 2.0 * size), ay)
-        for spread in clear:
-            handle2 = (bx + side * run * (0.5 + size), by - around * run * spread)
-            if not _leaves_by_face(p0, handle1, handle2, p3, node, side):
-                continue
-            radius = _min_turn_radius(p0, handle1, handle2, p3)
-            if radius >= _loop_min_radius(run):
-                return handle1, handle2
-            if best is None or radius > best[0]:
-                best = (radius, handle1, handle2)
+
+    def handles(size1, size2, spread):
+        return ((ax + side * (half_w + 20.0) * (1.0 + 2.0 * size1), ay),
+                (bx + side * run * (0.5 + size2), by - around * run * spread))
+
+    # The two handles grow together first. A compound nearly level with its
+    # member defeats that — the return has to climb over the box and drop
+    # straight back down — so failing it they grow apart, with the return
+    # allowed to swing wider, still smallest loop first.
+    matched = [(size, size, spread) for size in swing for spread in clear]
+    wider = clear + tuple(c for c in (1.8, 2.5, 3.5) if c > max(clear))
+    tried = set(matched)
+    apart = sorted(((s1, s2, c) for s1 in swing for s2 in swing for c in wider
+                    if (s1, s2, c) not in tried),
+                   key=lambda k: (max(k[0], k[1]), k[2], k[0] + k[1]))
+    for size1, size2, spread in matched + apart:
+        handle1, handle2 = handles(size1, size2, spread)
+        if not _leaves_by_face(p0, handle1, handle2, p3, node, side):
+            continue
+        radius = _min_turn_radius(p0, handle1, handle2, p3)
+        if radius >= _loop_min_radius(run):
+            return handle1, handle2
+        if best is None or radius > best[0]:
+            best = (radius, handle1, handle2)
     if best is None:
         log.warning("edge from (%.0f, %.0f) to (%.0f, %.0f) cannot turn back "
                     "through the %s face of its member — drawn as a plain arc",
@@ -1063,14 +1173,16 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
 
     top, bottom = 0.0, (len(members) - 1) * style.member_pitch
     nodes, compound_node = {}, {}
-    for compounds, x, span in ((inputs, input_x, True),
-                               (outputs, output_x, True),
-                               (left_lane, -lane_dx, False),
-                               (right_lane, lane_dx, False)):
-        if span:
+    # ``primary`` marks the input and output columns, drawn at the larger
+    # radius; the lanes hold the cross-fed compounds, drawn smaller
+    for compounds, x, primary in ((inputs, input_x, True),
+                                  (outputs, output_x, True),
+                                  (left_lane, -lane_dx, False),
+                                  (right_lane, lane_dx, False)):
+        if primary:
             column = _connectivity_column(
                 compounds, users, top, bottom,
-                style.min_node_spacing, style.span_columns)
+                style.node_spacing(style.min_node_spacing), style.span_columns)
         else:
             # the exchange lanes stay level with their members: compress the
             # spacing whenever the packed lane would exceed lane_span_fraction
@@ -1082,12 +1194,13 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
                     and bottom > top):
                 max_span = style.lane_span_fraction * (bottom - top)
                 lane_spacing = min(lane_spacing, max_span / (len(wanted) - 1))
-            column = _pack(wanted, lane_spacing)
+            # compressed or not, never so close that the circles touch
+            column = _pack(wanted, style.node_spacing(lane_spacing, primary=False))
         for compound, y in column.items():
             # Escher renders bigg_id as the on-map label (``name`` is only
             # tooltip metadata), so labels left of the axis are shifted by the
             # width of the compound ID.
-            offset = style.label_offset()
+            offset = style.label_offset(primary)
             if x < 0:
                 label_x = x - offset - _label_width(
                     compound, style.label_font_px)
@@ -1103,7 +1216,7 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
                 "name": compound_names.get(compound, compound),
                 "label_x": label_x,
                 "label_y": y + style.label_font_px / 4,
-                "node_is_primary": True,
+                "node_is_primary": primary,
             }
 
     reactions = []
@@ -1152,6 +1265,9 @@ def _layout_block(members, style, compound_names, node_ids, segment_ids,
             "genes": [],
             "metabolites": metabolites,
             "segments": segments,
+            # the box the turn-backs above were fitted to, for renderers to
+            # draw the member as (see member_box_rects)
+            "member_box": {"width": 2 * half_width, "height": 2 * half_height},
         })
 
     log.debug("block: %d members, %d inputs, %d outputs, %d exchanged",
@@ -1180,8 +1296,8 @@ def _block_extent(nodes, reactions, style, caption="", caption_x=0.0):
         bottoms.append(bottom)
 
     for node in nodes.values():
-        radius = (NODE_RADIUS if node.get("node_type") == "metabolite"
-                  else MARKER_RADIUS)
+        radius = (style.node_radius(node.get("node_is_primary", True))
+                  if node.get("node_type") == "metabolite" else MARKER_RADIUS)
         add(node["x"] - radius, node["x"] + radius,
             node["y"] - radius, node["y"] + radius)
         if "label_x" in node:
@@ -1363,11 +1479,12 @@ def build_escher_map(blocks, compound_names=None,
     # One geometry for the whole map — lanes fitted to its tallest member
     # column, columns to the widest compound label anywhere in it — so the
     # blocks stay aligned with each other and read at the same scale.
-    lane_dx = style.fitted_lane_dx(
-        max((len(members) - 1) * style.member_pitch for _, members in drawable))
-    columns = style.column_positions(
-        {c for _, members in drawable for m in members for c in m["fluxes"]},
-        lane_dx)
+    compounds = {c for _, members in drawable for m in members for c in m["fluxes"]}
+    columns = style.column_positions(compounds, style.fitted_lane_dx(
+        max((len(members) - 1) * style.member_pitch for _, members in drawable)))
+    lane_dx = style.lane_offset(columns, compounds)
+    has_columns = any(inputs or outputs for inputs, outputs, _ in
+                      (classify_compounds(members) for _, members in drawable))
 
     def lay_out(style, columns, lane_dx):
         """Lay every block out in its own local coordinates."""
@@ -1394,15 +1511,17 @@ def build_escher_map(blocks, compound_names=None,
             break
         ratio = canvas_width / canvas_height
         if ratio * style.max_aspect < 1.0:
-            # Too tall. Moving the lanes and the columns out by the same delta
-            # widens every block by exactly 2 * delta whichever of them is
-            # outermost — a block whose compounds are all cross-fed has no
-            # column nodes to move — and leaves the gap between them, and so
-            # the room its labels need, exactly as it was. No height changes,
-            # so this converges in one pass.
+            # Too tall. Moving the columns out by delta widens every block
+            # with column nodes by exactly 2 * delta, and the lanes follow to
+            # stay between them (lane_offset), which only ever leaves their
+            # labels more room. No height changes, so this converges in one
+            # pass. A map whose compounds are all cross-fed has no column
+            # nodes, and is only as wide as its lanes, so there the lanes take
+            # the whole delta themselves.
             delta = (canvas_height / style.max_aspect - canvas_width) / (2 * n_cols)
             columns = (columns[0] - delta, columns[1] + delta)
-            lane_dx += delta
+            lane_dx = (style.lane_offset(columns, compounds) if has_columns
+                       else lane_dx + delta)
             log.info("aspect %.3f is narrower than 1:%g — moving the columns "
                      "and lanes %.0f px further out",
                      ratio, style.max_aspect, delta)
@@ -1625,10 +1744,17 @@ def main():
              f"exchanged-compound lanes (default: {defaults.mixed_lane_dx:g})")
     parser.add_argument(
         "--lane-dx-fraction", type=float, default=None,
-        help=f"Grow that distance to this fraction of the tallest member "
-             f"column, so lane edges stay slanted in a big community "
+        help=f"Widen the map with the tallest member column: the input and "
+             f"output columns are fitted this fraction of its height out, "
+             f"plus the lane labels' room, and the lanes settle between "
+             f"(--lane-position), so edges stay slanted in a big community "
              f"(default: {defaults.lane_dx_fraction:g}; 0 stops the growth, "
-             f"though the aspect fit may still move the lanes)")
+             f"though the aspect fit may still widen the map)")
+    parser.add_argument(
+        "--lane-position", type=float, default=None,
+        help=f"Where the exchanged-compound lanes sit between the member "
+             f"column (0) and the input and output columns (1), as long as "
+             f"their labels still fit (default: {defaults.lane_position:g})")
     parser.add_argument(
         "--node-spacing", type=float, default=None,
         help=f"Minimum vertical spacing between nodes in the input/output "
@@ -1658,10 +1784,26 @@ def main():
              f"which overrides --column-dx and --lane-dx if it has to "
              f"(default: {defaults.max_aspect:g})")
     parser.add_argument(
+        "--no-figure", action="store_true",
+        help="Write only the map JSON; by default an SVG figure of each map "
+             "is rendered beside it (escher_edit.render), with a coloured box "
+             "node for every member")
+    parser.add_argument(
+        "--no-html", action="store_true",
+        help="Render each figure as an SVG only; by default an interactive "
+             "HTML figure goes beside it, where hovering an edge, compound or "
+             "member highlights what it connects")
+    parser.add_argument(
         "--no-aspect-limit", action="store_true",
         help="Stack the blocks in one column and let the figure end up "
              "whatever shape it wants")
+    from .render import add_member_color_arguments, member_color_options
+    add_member_color_arguments(parser)
     args = parser.parse_args()
+    coloring = member_color_options(args, parser)
+    if coloring and args.no_figure:
+        parser.error("--member-groups colours the figure, which --no-figure "
+                     "leaves out")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -1677,6 +1819,7 @@ def main():
         "member_pitch": args.member_pitch,
         "mixed_lane_dx": args.lane_dx,
         "lane_dx_fraction": args.lane_dx_fraction,
+        "lane_position": args.lane_position,
         "min_node_spacing": args.node_spacing,
         "lane_node_spacing": args.lane_spacing,
         "edge_curve": args.edge_curve,
@@ -1691,16 +1834,27 @@ def main():
     if args.no_aspect_limit:
         geometry["max_aspect"] = None
 
-    build_map_from_interactions(
+    style = MapStyle(**geometry)
+    written = build_map_from_interactions(
         args.csv_path,
         output_path=args.output,
         names_csv=args.names,
         conditions=args.conditions,
         min_abs_flux=args.min_flux,
         skip_names=skip_names,
-        style=MapStyle(**geometry),
+        style=style,
         separate_maps=args.separate_maps,
     )
+    if not args.no_figure:
+        from .render import render_map_svg
+        from .svg_editor import EscherStyle
+        # draw the labels at the sizes the layout reserved room for, so each
+        # member box is the one its edges were fitted around
+        drawing = EscherStyle(rxn_label_px=style.reaction_label_font_px,
+                              node_label_px=style.label_font_px)
+        for path in (written if isinstance(written, list) else [written]):
+            render_map_svg(path, style=drawing, layout=style,
+                           html=not args.no_html, **coloring)
 
 
 if __name__ == "__main__":
