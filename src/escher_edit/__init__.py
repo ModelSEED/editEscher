@@ -15,6 +15,8 @@ Public surface:
         draw_member_boxes, draw_member_legend, color_member_edges,
         member_reaction_colors
     render.render_map_svg, write_escher_svg
+    condensed.render_condensed_map, build_condensed_map,
+        render_condensed_svg, condense_fluxes, split_sides, CondensedStyle
     interactive.write_interactive_html, annotate_map_svg
     palette.member_colors, map_member_colors, member_palette, text_color_on,
         group_palette, group_legend, taxon_groups, MEMBER_PALETTE, UNGROUPED
@@ -63,6 +65,14 @@ from .palette import (
 )
 from .interactive import annotate_map_svg, write_interactive_html
 from .render import render_map_svg, write_escher_svg
+from .condensed import (
+    CondensedStyle,
+    build_condensed_map,
+    condense_fluxes,
+    render_condensed_map,
+    render_condensed_svg,
+    split_sides,
+)
 from .svg_editor import (
     EscherSVG_processing,
     EscherStyle,
@@ -97,4 +107,6 @@ __all__ = [
     "text_color_on", "group_palette", "group_legend", "taxon_groups",
     "UNGROUPED", "render_map_svg", "write_escher_svg",
     "write_interactive_html", "annotate_map_svg",
+    "CondensedStyle", "build_condensed_map", "condense_fluxes",
+    "render_condensed_map", "render_condensed_svg", "split_sides",
 ]
