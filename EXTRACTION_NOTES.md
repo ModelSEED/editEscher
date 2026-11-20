@@ -361,6 +361,13 @@ drawing made general:
   (medium / effluent);
 - **one key on the right** — the member (or group) colours, the width scale,
   what dashed and solid mean, and any notes; a header over each column.
+- **arranged like the main figures** — the panel is laid out by the same
+  `build_escher_map`, so the connectivity rule above holds unchanged: members
+  in an organ pipe by how many compounds each exchanges (busiest in the
+  middle, quietest at the ends), and each column's compounds by their number
+  of edges, in the half where their members mostly sit. Connectivity is
+  counted on the edges the panel draws, and since there are no lanes the
+  cross-fed compounds follow the column rule on each side.
 
 ```python
 from escher_edit import render_condensed_map, CondensedStyle
