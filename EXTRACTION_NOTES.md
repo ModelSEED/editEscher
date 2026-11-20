@@ -54,6 +54,7 @@ regenerated from the notebook directly.
 | `src/escher_edit/render.py` | `render_map_svg`: map JSON -> finished SVG figure, no browser |
 | `src/escher_edit/palette.py` | member colours, by member or by group (phylogeny) |
 | `src/escher_edit/interactive.py` | the interactive HTML figure written beside each rendered SVG |
+| `src/escher_edit/condensed.py` | *(new)* the optional condensed aesthetic: a slide-sized, bipartite interaction map — see below |
 
 ## Map generation
 
@@ -327,4 +328,57 @@ Install with `pip install -e .` (or `uv pip install -e .`) from the repo
 root. Console scripts `escher-edit-filter`, `escher-edit-clean`,
 `escher-edit-map`, `escher-edit-svg` run each module's notebook-equivalent
 entrypoint; `escher-edit-build` runs the map generator and
-`escher-edit-render` renders maps to figures.
+`escher-edit-render` renders maps to figures; `escher-edit-condensed` draws
+the condensed interaction map of one condition.
+
+## Condensed interaction map (optional aesthetic)
+
+The community map above is the one to read on screen, where it zooms; on a
+slide its labels are a few points high. `escher_edit.condensed` draws the same
+exchange data as a condensed panel for a slide or a figure. It began as an ad
+hoc figure for a reactor-community presentation (one day of a 20 L EBPR
+reactor's community model, 13 of 63 members, six compounds) and is the same
+drawing made general:
+
+- **condensed** — `condense_fluxes`: only the compounds asked for (default
+  all), and for each compound and side only the members with the largest
+  `|flux|`, taken in order until they cover `cover` (default 0.6) of that
+  side's total; the returned coverage says what the panel leaves out;
+- **bipartite** — `split_sides`: a compound taken up sits in a column on the
+  left and one excreted in a column on the right, so a compound both made and
+  used appears once on each side; no lanes (`classify_compounds` does the
+  rest);
+- **large type, landscape** — `CondensedStyle`: member labels 56 px and
+  compound labels 50 px (about 10 pt and 9 pt on a panel 8.5 in wide), a
+  140 px member pitch, no aspect cap;
+- **edges from the box outline** — each edge leaves the face of its member's
+  box nearest its compound and reaches the compound as an S-curve that is
+  horizontal at both ends; an excretion ends in an arrowhead, an uptake has
+  none;
+- **edge width = |flux|** on one log scale (`CondensedStyle.width_scale`,
+  1e-5 -> 2.5 px ... 1 -> 20 px, clamped), with the edges of compounds some
+  members make and others use dashed (member-to-member) and the rest solid
+  (medium / effluent);
+- **one key on the right** — the member (or group) colours, the width scale,
+  what dashed and solid mean, and any notes; a header over each column.
+
+```python
+from escher_edit import render_condensed_map, CondensedStyle
+svg, escher_map, info = render_condensed_map(
+    fluxes_by_member, "panel.svg", compound_names=names,
+    compounds=["cpd00141", "cpd00029", "cpd00075", "cpd00009", "cpd00013", "cpd00011"],
+    cover=0.6, title="Day 560 · Phase V",
+    style=CondensedStyle(flux_units="mmol per gDW community per h"),
+    member_groups=groups)            # or member_colors={member: "#rrggbb"}
+```
+
+```
+escher-edit-condensed ASVMetaboliteInteractions.csv --condition RC-ABX_12.5 \
+    --id-csv ids.csv --names-csv names.csv --compounds cpd00029 cpd00011 \
+    --cover 0.6 --member-groups taxonomy.json --group-rank phylum -o panel.svg
+```
+
+`build_condensed_map` returns an ordinary Escher map (it opens in Escher, keyed
+by the compounds' display names, the excretion side's with a trailing no-break
+space) plus the segment table `render_condensed_svg` styles; the look itself is
+in the SVG.
